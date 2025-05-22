@@ -1,0 +1,258 @@
+"""command line interface for covtool"""
+
+from typing import List, Optional
+from pathlib import Path
+
+import typer
+
+from .drcov import DrcovFormat
+from .analysis import load_multiple_coverage, print_coverage_stats, print_rarity_analysis
+
+
+app = typer.Typer(
+    help="powerful drcov coverage analysis and manipulation",
+    no_args_is_help=True,
+    context_settings=dict(help_option_names=["-h", "--help"]),
+    pretty_exceptions_short=True,
+    pretty_exceptions_show_locals=False,
+    add_completion=False,
+)
+
+
+@app.command()
+def union(
+    files: List[Path] = typer.Argument(..., help="drcov files to union"),
+    output: Path = typer.Option(..., "--output", "-o", help="output file"),
+    module: Optional[str] = typer.Option(
+        None, "--module", "-m", help="filter to specific module"
+    ),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="verbose output"),
+):
+    """compute union of coverage files (logical OR)"""
+    coverage_sets = load_multiple_coverage(files)
+    if not coverage_sets:
+        typer.echo("no valid coverage files loaded", err=True)
+        raise typer.Exit(1)
+
+    # compute union
+    result = coverage_sets[0]
+    for cov in coverage_sets[1:]:
+        result = result | cov
+
+    # apply module filter if specified
+    if module:
+        result = result.filter_by_module(module)
+
+    # write result
+    DrcovFormat.write(result, output)
+
+    if verbose:
+        typer.echo(f"union of {len(files)} files:")
+        print_coverage_stats(result)
+
+    typer.echo(f"wrote {len(result)} blocks to {output}")
+
+
+@app.command()
+def intersect(
+    files: List[Path] = typer.Argument(..., help="drcov files to intersect"),
+    output: Path = typer.Option(..., "--output", "-o", help="output file"),
+    module: Optional[str] = typer.Option(
+        None, "--module", "-m", help="filter to specific module"
+    ),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="verbose output"),
+):
+    """compute intersection of coverage files (logical AND)"""
+    coverage_sets = load_multiple_coverage(files)
+    if not coverage_sets:
+        typer.echo("no valid coverage files loaded", err=True)
+        raise typer.Exit(1)
+
+    # compute intersection
+    result = coverage_sets[0]
+    for cov in coverage_sets[1:]:
+        result = result & cov
+
+    # apply module filter if specified
+    if module:
+        result = result.filter_by_module(module)
+
+    # write result
+    DrcovFormat.write(result, output)
+
+    if verbose:
+        typer.echo(f"intersection of {len(files)} files:")
+        print_coverage_stats(result)
+
+    typer.echo(f"wrote {len(result)} blocks to {output}")
+
+
+@app.command()
+def diff(
+    minuend: Path = typer.Argument(..., help="coverage to subtract from"),
+    subtrahend: Path = typer.Argument(..., help="coverage to subtract"),
+    output: Path = typer.Option(..., "--output", "-o", help="output file"),
+    module: Optional[str] = typer.Option(
+        None, "--module", "-m", help="filter to specific module"
+    ),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="verbose output"),
+):
+    """compute difference between coverage files (minuend - subtrahend)"""
+    try:
+        cov1 = DrcovFormat.read(minuend)
+        cov2 = DrcovFormat.read(subtrahend)
+    except Exception as e:
+        typer.echo(f"error loading files: {e}", err=True)
+        raise typer.Exit(1)
+
+    # compute difference
+    result = cov1 - cov2
+
+    # apply module filter if specified
+    if module:
+        result = result.filter_by_module(module)
+
+    # write result
+    DrcovFormat.write(result, output)
+
+    if verbose:
+        typer.echo(f"difference analysis:")
+        print_coverage_stats(cov1, f"{minuend.name} (minuend)")
+        print_coverage_stats(cov2, f"{subtrahend.name} (subtrahend)")
+        print_coverage_stats(result, "result")
+
+    typer.echo(f"wrote {len(result)} unique blocks to {output}")
+
+
+@app.command()
+def symdiff(
+    file1: Path = typer.Argument(..., help="first coverage file"),
+    file2: Path = typer.Argument(..., help="second coverage file"),
+    output: Path = typer.Option(..., "--output", "-o", help="output file"),
+    module: Optional[str] = typer.Option(
+        None, "--module", "-m", help="filter to specific module"
+    ),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="verbose output"),
+):
+    """compute symmetric difference (blocks unique to either file)"""
+    try:
+        cov1 = DrcovFormat.read(file1)
+        cov2 = DrcovFormat.read(file2)
+    except Exception as e:
+        typer.echo(f"error loading files: {e}", err=True)
+        raise typer.Exit(1)
+
+    # compute symmetric difference
+    result = cov1 ^ cov2
+
+    # apply module filter if specified
+    if module:
+        result = result.filter_by_module(module)
+
+    # write result
+    DrcovFormat.write(result, output)
+
+    if verbose:
+        typer.echo(f"symmetric difference analysis:")
+        print_coverage_stats(cov1, file1.name)
+        print_coverage_stats(cov2, file2.name)
+        print_coverage_stats(result, "result (unique to either)")
+
+    typer.echo(f"wrote {len(result)} blocks to {output}")
+
+
+@app.command()
+def stats(
+    files: List[Path] = typer.Argument(..., help="drcov files to analyze"),
+    module: Optional[str] = typer.Option(
+        None, "--module", "-m", help="filter to specific module"
+    ),
+):
+    """display coverage statistics for files"""
+    for filepath in files:
+        try:
+            coverage = DrcovFormat.read(filepath)
+
+            if module:
+                coverage = coverage.filter_by_module(module)
+
+            print_coverage_stats(coverage, filepath.name)
+            typer.echo()
+
+        except Exception as e:
+            typer.echo(f"error analyzing {filepath}: {e}", err=True)
+
+
+@app.command()
+def rarity(
+    files: List[Path] = typer.Argument(..., help="drcov files to analyze"),
+    threshold: int = typer.Option(1, "--threshold", "-t", help="rarity threshold"),
+    module: Optional[str] = typer.Option(
+        None, "--module", "-m", help="filter to specific module"
+    ),
+):
+    """find rare blocks across coverage files"""
+    coverage_sets = load_multiple_coverage(files)
+    if not coverage_sets:
+        typer.echo("no valid coverage files loaded", err=True)
+        raise typer.Exit(1)
+
+    # apply module filter if specified
+    if module:
+        coverage_sets = [cov.filter_by_module(module) for cov in coverage_sets]
+
+    print_rarity_analysis(coverage_sets, threshold)
+
+
+@app.command()
+def compare(
+    baseline: Path = typer.Argument(..., help="baseline coverage file"),
+    targets: List[Path] = typer.Argument(..., help="files to compare against baseline"),
+    module: Optional[str] = typer.Option(
+        None, "--module", "-m", help="filter to specific module"
+    ),
+):
+    """compare coverage files against a baseline"""
+    try:
+        baseline_cov = DrcovFormat.read(baseline)
+        if module:
+            baseline_cov = baseline_cov.filter_by_module(module)
+    except Exception as e:
+        typer.echo(f"error loading baseline {baseline}: {e}", err=True)
+        raise typer.Exit(1)
+
+    typer.echo(f"baseline: {baseline.name} ({len(baseline_cov)} blocks)")
+    typer.echo("=" * 70)
+    typer.echo(
+        f"{'file':<30} {'total':<8} {'common':<8} {'unique':<8} {'missing':<8} {'coverage':<10}"
+    )
+    typer.echo("-" * 70)
+
+    for target_path in targets:
+        try:
+            target_cov = DrcovFormat.read(target_path)
+            if module:
+                target_cov = target_cov.filter_by_module(module)
+
+            common = baseline_cov & target_cov
+            unique = target_cov - baseline_cov
+            missing = baseline_cov - target_cov
+
+            coverage_pct = len(common) / len(baseline_cov) if baseline_cov else 0
+
+            typer.echo(
+                f"{target_path.name:<30} {len(target_cov):<8} {len(common):<8} "
+                f"{len(unique):<8} {len(missing):<8} {coverage_pct:<10.2%}"
+            )
+
+        except Exception as e:
+            typer.echo(f"error loading {target_path}: {e}", err=True)
+
+
+def main():
+    """entry point for poetry script"""
+    app()
+
+
+if __name__ == "__main__":
+    main()
