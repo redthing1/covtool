@@ -6,7 +6,8 @@ from pathlib import Path
 import typer
 
 from .drcov import DrcovFormat
-from .analysis import load_multiple_coverage, print_coverage_stats, print_rarity_analysis
+from .analysis import load_multiple_coverage, print_coverage_stats, print_rarity_analysis, print_detailed_info_rich, print_detailed_info_json
+from .inspector import run_inspector
 
 
 app = typer.Typer(
@@ -202,6 +203,53 @@ def rarity(
         coverage_sets = [cov.filter_by_module(module) for cov in coverage_sets]
 
     print_rarity_analysis(coverage_sets, threshold)
+
+
+@app.command()
+def info(
+    file: Path = typer.Argument(..., help="drcov file to analyze"),
+    module: Optional[str] = typer.Option(
+        None, "--module", "-m", help="filter to specific module"
+    ),
+    json_output: bool = typer.Option(
+        False, "--json", help="output information as JSON"
+    ),
+):
+    """display detailed information about a coverage trace"""
+    try:
+        coverage = DrcovFormat.read(file)
+        if module:
+            coverage = coverage.filter_by_module(module)
+        
+        if json_output:
+            print_detailed_info_json(coverage, file.name, module)
+        else:
+            print_detailed_info_rich(coverage, file.name, module)
+    except Exception as e:
+        typer.echo(f"error analyzing {file}: {e}", err=True)
+        raise typer.Exit(1)
+
+
+@app.command()
+def inspect(
+    file: Path = typer.Argument(..., help="drcov file to inspect"),
+    module: Optional[str] = typer.Option(
+        None, "--module", "-m", help="filter to specific module"
+    ),
+):
+    """launch interactive tui inspector for coverage trace"""
+    try:
+        coverage = DrcovFormat.read(file)
+        if module:
+            coverage = coverage.filter_by_module(module)
+            filename = f"{file.name} (filtered: {module})"
+        else:
+            filename = file.name
+        
+        run_inspector(coverage, filename)
+    except Exception as e:
+        typer.echo(f"error loading {file}: {e}", err=True)
+        raise typer.Exit(1)
 
 
 @app.command()

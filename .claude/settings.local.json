@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:pytermgui.readthedocs.io)",
+      "WebFetch(domain:ptg.bczsalba.com)",
+      "WebFetch(domain:github.com)"
+    ],
+    "deny": []
+  }
+}

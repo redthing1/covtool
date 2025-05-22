@@ -96,6 +96,25 @@ files = [
 windows-terminal = ["colorama (>=0.4.6)"]
 
 [[package]]
+name = "pytermgui"
+version = "7.7.4"
+description = "Python TUI framework with mouse support, modular widget system, customizable and rapid terminal markup language and more!"
+optional = false
+python-versions = ">=3.8"
+groups = ["main"]
+files = [
+    {file = "pytermgui-7.7.4-py3-none-any.whl", hash = "sha256:5f25a38f4886ee8e6e6a35c114a89101efc061bcb91ea7ba61c256ba1f163111"},
+    {file = "pytermgui-7.7.4.tar.gz", hash = "sha256:f29598693ee299192f50be648933d65820e4b9a6e258007fd4bf898e3eb6c47d"},
+]
+
+[package.dependencies]
+typing-extensions = "*"
+wcwidth = "*"
+
+[package.extras]
+yaml = ["pyyaml"]
+
+[[package]]
 name = "rich"
 version = "13.9.4"
 description = "Render rich text, tables, progress bars, syntax highlighting, markdown and more to the terminal"
@@ -157,7 +176,19 @@ files = [
     {file = "typing_extensions-4.13.2.tar.gz", hash = "sha256:e6c81219bd689f51865d9e372991c540bda33a0379d5573cddb9a3a23f7caaef"},
 ]
 
+[[package]]
+name = "wcwidth"
+version = "0.2.13"
+description = "Measures the displayed width of unicode strings in a terminal"
+optional = false
+python-versions = "*"
+groups = ["main"]
+files = [
+    {file = "wcwidth-0.2.13-py2.py3-none-any.whl", hash = "sha256:3da69048e4540d84af32131829ff948f1e022c1c6bdb8d6102117aac784f6859"},
+    {file = "wcwidth-0.2.13.tar.gz", hash = "sha256:72ea0c06399eb286d978fdedb6923a9eb47e1c486ce63e9b4e64fc18303972b5"},
+]
+
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10,<4.0"
-content-hash = "ae857dd4b09a706a53f052739628ea83154e7b4eb11f67b80944b397d84ceb3f"
+content-hash = "4b91e86e88bb23a35182f78fe754b456d7440da41353ec10258d1eb7045f8f00"
