@@ -291,8 +291,11 @@ class _Parser:
                 raise DrCovError("Invalid or missing flavor header.")
             flavor = flavor_line[len(_FLAVOR_PREFIX) :].strip()
 
-            # Consume the blank line after the header
-            stream.readline()
+            # Consume the blank line after the header (if present)
+            pos = stream.tell()
+            blank_line = stream.readline()
+            if blank_line.strip():  # If it's not blank, rewind
+                stream.seek(pos)
 
             return FileHeader(version, flavor)
         except (ValueError, IndexError) as e:
