@@ -5,8 +5,14 @@ from pathlib import Path
 
 import typer
 
-from .drcov import DrcovFormat
-from .analysis import load_multiple_coverage, print_coverage_stats, print_rarity_analysis, print_detailed_info_rich, print_detailed_info_json
+from .core import CoverageSet
+from .analysis import (
+    load_multiple_coverage,
+    print_coverage_stats,
+    print_rarity_analysis,
+    print_detailed_info_rich,
+    print_detailed_info_json,
+)
 from .inspector import run_inspector
 
 
@@ -45,7 +51,7 @@ def union(
         result = result.filter_by_module(module)
 
     # write result
-    DrcovFormat.write(result, output)
+    result.write_to_file(str(output))
 
     if verbose:
         typer.echo(f"union of {len(files)} files:")
@@ -79,7 +85,7 @@ def intersect(
         result = result.filter_by_module(module)
 
     # write result
-    DrcovFormat.write(result, output)
+    result.write_to_file(str(output))
 
     if verbose:
         typer.echo(f"intersection of {len(files)} files:")
@@ -100,8 +106,8 @@ def diff(
 ):
     """compute difference between coverage files (minuend - subtrahend)"""
     try:
-        cov1 = DrcovFormat.read(minuend)
-        cov2 = DrcovFormat.read(subtrahend)
+        cov1 = CoverageSet.from_file(str(minuend))
+        cov2 = CoverageSet.from_file(str(subtrahend))
     except Exception as e:
         typer.echo(f"error loading files: {e}", err=True)
         raise typer.Exit(1)
@@ -114,7 +120,7 @@ def diff(
         result = result.filter_by_module(module)
 
     # write result
-    DrcovFormat.write(result, output)
+    result.write_to_file(str(output))
 
     if verbose:
         typer.echo(f"difference analysis:")
@@ -137,8 +143,8 @@ def symdiff(
 ):
     """compute symmetric difference (blocks unique to either file)"""
     try:
-        cov1 = DrcovFormat.read(file1)
-        cov2 = DrcovFormat.read(file2)
+        cov1 = CoverageSet.from_file(str(file1))
+        cov2 = CoverageSet.from_file(str(file2))
     except Exception as e:
         typer.echo(f"error loading files: {e}", err=True)
         raise typer.Exit(1)
@@ -151,7 +157,7 @@ def symdiff(
         result = result.filter_by_module(module)
 
     # write result
-    DrcovFormat.write(result, output)
+    result.write_to_file(str(output))
 
     if verbose:
         typer.echo(f"symmetric difference analysis:")
@@ -172,7 +178,7 @@ def stats(
     """display coverage statistics for files"""
     for filepath in files:
         try:
-            coverage = DrcovFormat.read(filepath)
+            coverage = CoverageSet.from_file(str(filepath))
 
             if module:
                 coverage = coverage.filter_by_module(module)
@@ -217,10 +223,10 @@ def info(
 ):
     """display detailed information about a coverage trace"""
     try:
-        coverage = DrcovFormat.read(file)
+        coverage = CoverageSet.from_file(str(file))
         if module:
             coverage = coverage.filter_by_module(module)
-        
+
         if json_output:
             print_detailed_info_json(coverage, file.name, module)
         else:
@@ -239,13 +245,13 @@ def inspect(
 ):
     """launch interactive tui inspector for coverage trace"""
     try:
-        coverage = DrcovFormat.read(file)
+        coverage = CoverageSet.from_file(str(file))
         if module:
             coverage = coverage.filter_by_module(module)
             filename = f"{file.name} (filtered: {module})"
         else:
             filename = file.name
-        
+
         run_inspector(coverage, filename)
     except Exception as e:
         typer.echo(f"error loading {file}: {e}", err=True)
@@ -262,7 +268,7 @@ def compare(
 ):
     """compare coverage files against a baseline"""
     try:
-        baseline_cov = DrcovFormat.read(baseline)
+        baseline_cov = CoverageSet.from_file(str(baseline))
         if module:
             baseline_cov = baseline_cov.filter_by_module(module)
     except Exception as e:
@@ -278,7 +284,7 @@ def compare(
 
     for target_path in targets:
         try:
-            target_cov = DrcovFormat.read(target_path)
+            target_cov = CoverageSet.from_file(str(target_path))
             if module:
                 target_cov = target_cov.filter_by_module(module)
 
