@@ -1,52 +1,28 @@
-"""interactive tui inspector for coverage traces using simple terminal control"""
+"""Interactive TUI inspector for coverage traces using urwid"""
 
-import sys
 import os
-import termios
-import tty
-from typing import Dict, List, Optional, Set, Tuple
-from collections import defaultdict, Counter
+
+import urwid
 
 from .core import CoverageSet
-from .drcov import BasicBlock, ModuleEntry
 
 
-def getch():
-    """get a single character from stdin without echoing"""
-    fd = sys.stdin.fileno()
-    old_settings = termios.tcgetattr(fd)
-    try:
-        tty.cbreak(fd)
-        ch = sys.stdin.read(1)
-        if ch == "\x1b":  # escape sequence
-            ch += sys.stdin.read(2)
-        return ch
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+class SelectableText(urwid.Text):
+    """Text widget that can be selected and focused"""
 
+    def __init__(self, text, index=None):
+        super().__init__(text)
+        self.index = index
 
-def clear_screen():
-    """clear the terminal screen"""
-    os.system("clear" if os.name == "posix" else "cls")
+    def selectable(self):
+        return True
 
-
-def move_cursor(row, col):
-    """move cursor to position"""
-    print(f"\033[{row};{col}H", end="")
-
-
-def hide_cursor():
-    """hide the cursor"""
-    print("\033[?25l", end="")
-
-
-def show_cursor():
-    """show the cursor"""
-    print("\033[?25h", end="")
+    def keypress(self, size, key):
+        return key
 
 
 class CoverageInspector:
-    """simple tui inspector for coverage traces"""
+    """TUI inspector for coverage traces using urwid"""
 
     def __init__(self, coverage: CoverageSet, filename: str):
         self.coverage = coverage
@@ -54,55 +30,50 @@ class CoverageInspector:
         self.filtered_coverage = coverage
         self.current_filter = ""
 
-        # ui state
+        # UI state
         self.current_view = "modules"  # modules, blocks, stats
-        self.selected_module = 0
-        self.scroll_offset = 0
         self.module_list = []
         self.block_list = []
+        self.scroll_offset = 0
 
-        # terminal dimensions
-        self.height = 24
-        self.width = 80
-        self._update_dimensions()
+        # UI components
+        self.main_loop = None
+        self.content_area = None
+        self.main_widget = None
+        self.module_listbox = None
 
         self._setup_data()
 
-    def _update_dimensions(self):
-        """get current terminal dimensions"""
-        try:
-            import shutil
-
-            self.width, self.height = shutil.get_terminal_size()
-        except:
-            pass
-
     def _setup_data(self):
-        """prepare data for display"""
+        """Prepare data for display"""
         self._refresh_module_list()
         self._refresh_block_list()
 
     def _refresh_module_list(self):
-        """refresh the module list for current filtered coverage"""
+        """Refresh the module list for current filtered coverage"""
         by_module = self.filtered_coverage.get_coverage_by_module()
         self.module_list = []
 
+        total_blocks = len(self.filtered_coverage.data.basic_blocks)
         for module_name, blocks in sorted(
             by_module.items(), key=lambda x: len(x[1]), reverse=True
         ):
             block_count = len(blocks)
             total_size = sum(block.size for block in blocks)
+            percentage = (block_count / total_blocks * 100) if total_blocks > 0 else 0
+
             self.module_list.append(
                 {
                     "name": module_name,
                     "blocks": blocks,
                     "count": block_count,
                     "size": total_size,
+                    "percentage": percentage,
                 }
             )
 
     def _refresh_block_list(self):
-        """refresh the block list for current filtered coverage"""
+        """Refresh the block list for current filtered coverage"""
         self.block_list = []
 
         for block in sorted(
@@ -116,11 +87,16 @@ class CoverageInspector:
             abs_addr = module.base + block.start if module else None
 
             self.block_list.append(
-                {"block": block, "module_name": module_name, "abs_addr": abs_addr}
+                {
+                    "block": block,
+                    "module": module,
+                    "module_name": module_name,
+                    "abs_addr": abs_addr,
+                }
             )
 
     def _apply_filter(self, filter_text: str):
-        """apply module filter"""
+        """Apply module filter"""
         self.current_filter = filter_text
         if filter_text.strip():
             self.filtered_coverage = self.coverage.filter_by_module(filter_text.strip())
@@ -129,141 +105,126 @@ class CoverageInspector:
 
         self._refresh_module_list()
         self._refresh_block_list()
-        self.selected_module = 0
-        self.scroll_offset = 0
+        self._update_view()
+        self._update_header_footer()
 
-    def _draw_header(self):
-        """draw the header"""
-        filter_text = f" (filter: {self.current_filter})" if self.current_filter else ""
-        title = f"Coverage Inspector - {self.filename}{filter_text}"
-
-        # truncate if too long
-        if len(title) > self.width - 2:
-            title = title[: self.width - 5] + "..."
-
-        print("+" + "=" * (self.width - 2) + "+")
-        print(f"| {title:<{self.width - 4}} |")
-        print("+" + "=" * (self.width - 2) + "+")
-
-    def _draw_footer(self):
-        """draw the footer with commands"""
-        commands = "[1/m]odules [2/b]locks [3/s]tats [f]ilter [r]eset [q]uit"
-        if self.current_view == "modules":
-            nav_help = " j/k:navigate enter:filter"
-            commands += nav_help
-
-        # truncate if too long
-        if len(commands) > self.width - 2:
-            commands = commands[: self.width - 5] + "..."
-
-        print("+" + "-" * (self.width - 2) + "+")
-        print(f"| {commands:<{self.width - 4}} |")
-        print("+" + "=" * (self.width - 2) + "+")
-
-    def _draw_modules_view(self):
-        """draw the modules view"""
+    def _create_modules_view(self):
+        """Create the modules view with proper navigation"""
         if not self.module_list:
-            print("| No modules found" + " " * (self.width - 20) + "|")
-            return
-
-        # header
-        header = f"{'Module':<30} {'Blocks':<10} {'Size':<12} {'%':<6}"
-        print(f"| {header:<{self.width - 4}} |")
-        print("+" + "-" * (self.width - 2) + "+")
-
-        # calculate visible range
-        content_height = self.height - 6  # header + footer
-        visible_start = self.scroll_offset
-        visible_end = min(visible_start + content_height, len(self.module_list))
-
-        # adjust selected module to be visible
-        if self.selected_module < visible_start:
-            self.scroll_offset = self.selected_module
-        elif self.selected_module >= visible_end:
-            self.scroll_offset = self.selected_module - content_height + 1
-            if self.scroll_offset < 0:
-                self.scroll_offset = 0
-
-        # redraw visible range
-        visible_start = self.scroll_offset
-        visible_end = min(visible_start + content_height, len(self.module_list))
-
-        for i in range(visible_start, visible_end):
-            mod_info = self.module_list[i]
-            percentage = (
-                (mod_info["count"] / len(self.filtered_coverage)) * 100
-                if self.filtered_coverage
-                else 0
+            return urwid.Filler(
+                urwid.Text("No modules found", align="center"), valign="middle"
             )
-            marker = ">" if i == self.selected_module else " "
 
-            # truncate module name if too long
+        # Create module list items
+        items = []
+
+        # Header
+        header_text = f"{'Module':<40} {'Blocks':<10} {'Size':<12} {'%':<8}"
+        header = urwid.AttrMap(urwid.Text(header_text), "header")
+        items.append(header)
+        items.append(urwid.Divider("═"))
+
+        # Module entries
+        for i, mod_info in enumerate(self.module_list):
             mod_name = mod_info["name"]
-            if len(mod_name) > 29:
-                mod_name = mod_name[:26] + "..."
+            if len(mod_name) > 38:
+                mod_name = mod_name[:35] + "..."
 
-            line = f"{marker}{mod_name:<29} {mod_info['count']:<10,} {mod_info['size']:<12,} {percentage:<5.1f}%"
-            if len(line) > self.width - 4:
-                line = line[: self.width - 7] + "..."
+            # Format size with units
+            size = mod_info["size"]
+            if size >= 1024 * 1024:
+                size_str = f"{size / (1024 * 1024):.1f}MB"
+            elif size >= 1024:
+                size_str = f"{size / 1024:.1f}KB"
+            else:
+                size_str = f"{size}B"
 
-            print(f"| {line:<{self.width - 4}} |")
+            line_text = f"{mod_name:<40} {mod_info['count']:<10,} {size_str:<12} {mod_info['percentage']:<7.1f}%"
 
-        # fill remaining space
-        for _ in range(visible_end - visible_start, content_height):
-            print("|" + " " * (self.width - 2) + "|")
+            # Create selectable text widget
+            item = SelectableText(line_text, index=i)
+            item = urwid.AttrMap(item, None, focus_map="selected")
+            items.append(item)
 
-    def _draw_blocks_view(self):
-        """draw the blocks view"""
+        # Create listbox with proper focus handling
+        self.module_listbox = urwid.ListBox(urwid.SimpleFocusListWalker(items))
+
+        # Set focus to first module (skip header and divider)
+        if len(items) > 2:
+            self.module_listbox.set_focus(2)
+
+        return self.module_listbox
+
+    def _create_blocks_view(self):
+        """Create the blocks view with scrolling"""
         if not self.block_list:
-            print("| No blocks found" + " " * (self.width - 19) + "|")
-            return
+            return urwid.Filler(
+                urwid.Text("No blocks found", align="center"), valign="middle"
+            )
 
-        # header
-        header = f"{'Offset':<12} {'Size':<6} {'Module':<20} {'Absolute':<12}"
-        print(f"| {header:<{self.width - 4}} |")
-        print("+" + "-" * (self.width - 2) + "+")
+        # Create block list items
+        items = []
 
-        # show first blocks that fit
-        content_height = self.height - 6
-        display_blocks = self.block_list[:content_height]
+        # Header
+        header_text = (
+            f"{'Offset':<12} {'Size':<6} {'Module':<25} {'Absolute Address':<16}"
+        )
+        header = urwid.AttrMap(urwid.Text(header_text), "header")
+        items.append(header)
+        items.append(urwid.Divider("═"))
 
-        for block_info in display_blocks:
+        # Block entries (show more blocks, with pagination)
+        max_blocks = min(500, len(self.block_list))  # Show up to 500 blocks
+        for block_info in self.block_list[:max_blocks]:
             block = block_info["block"]
             abs_addr_str = (
                 f"0x{block_info['abs_addr']:x}" if block_info["abs_addr"] else "unknown"
             )
 
-            # truncate module name if too long
             mod_name = block_info["module_name"]
-            if len(mod_name) > 19:
-                mod_name = mod_name[:16] + "..."
+            if len(mod_name) > 23:
+                mod_name = mod_name[:20] + "..."
 
-            line = f"0x{block.start:08x} {block.size:<6} {mod_name:<20} {abs_addr_str}"
-            if len(line) > self.width - 4:
-                line = line[: self.width - 7] + "..."
+            line_text = (
+                f"0x{block.start:08x} {block.size:<6} {mod_name:<25} {abs_addr_str}"
+            )
+            item = SelectableText(line_text)
+            item = urwid.AttrMap(item, None, focus_map="focus")
+            items.append(item)
 
-            print(f"| {line:<{self.width - 4}} |")
+        if len(self.block_list) > max_blocks:
+            remaining = len(self.block_list) - max_blocks
+            items.append(
+                urwid.AttrMap(
+                    urwid.Text(
+                        f"... ({remaining:,} more blocks - use filter to narrow down)"
+                    ),
+                    "dim",
+                )
+            )
 
-        # show count if truncated
-        if len(self.block_list) > content_height:
-            remaining = len(self.block_list) - content_height
-            line = f"... ({remaining:,} more blocks)"
-            print(f"| {line:<{self.width - 4}} |")
-            content_height -= 1
+        listbox = urwid.ListBox(urwid.SimpleFocusListWalker(items))
+        return listbox
 
-        # fill remaining space
-        for _ in range(len(display_blocks), content_height):
-            print("|" + " " * (self.width - 2) + "|")
-
-    def _draw_stats_view(self):
-        """draw the stats view"""
+    def _create_stats_view(self):
+        """Create an enhanced stats view"""
         cov = self.filtered_coverage
-        content_height = self.height - 6
-        lines_drawn = 0
 
-        # basic stats
-        stats = [
-            f"Total blocks: {len(cov):,}",
+        stats_content = []
+
+        # Title with filter info
+        if self.current_filter:
+            title_text = f"Coverage Analysis (Filtered: {self.current_filter})"
+        else:
+            title_text = "Coverage Analysis (All Modules)"
+        stats_content.append(
+            urwid.AttrMap(urwid.Text(title_text, align="center"), "title")
+        )
+        stats_content.append(urwid.Divider())
+
+        # Basic stats in columns
+        basic_stats = [
+            f"Total basic blocks: {len(cov):,}",
             f"Total modules: {len(cov.modules):,}",
         ]
 
@@ -273,132 +234,365 @@ class CoverageInspector:
             min_size = min(block.size for block in cov.data.basic_blocks)
             max_size = max(block.size for block in cov.data.basic_blocks)
 
-            stats.extend(
+            # Format total size
+            if total_size > 1024 * 1024:
+                total_size_str = f"{total_size / (1024 * 1024):.2f} MB"
+            elif total_size > 1024:
+                total_size_str = f"{total_size / 1024:.2f} KB"
+            else:
+                total_size_str = f"{total_size} bytes"
+
+            basic_stats.extend(
                 [
-                    f"Total coverage: {total_size:,} bytes",
+                    f"Total coverage size: {total_size_str}",
                     f"Average block size: {avg_size:.1f} bytes",
-                    f"Size range: {min_size} - {max_size} bytes",
+                    f"Block size range: {min_size} - {max_size} bytes",
                 ]
             )
 
-            # address space
+        for stat in basic_stats:
+            stats_content.append(urwid.Text(f"  {stat}"))
+
+        stats_content.append(urwid.Divider())
+
+        # Address space info
+        if cov.data.basic_blocks:
             addresses = cov.get_absolute_addresses()
             if addresses:
                 min_addr = min(addresses)
                 max_addr = max(addresses)
                 addr_range = max_addr - min_addr
 
-                stats.extend(
-                    [
-                        "",
-                        f"Address range: 0x{min_addr:x} - 0x{max_addr:x}",
-                        f"Span: {addr_range:,} bytes ({addr_range / 1024 / 1024:.1f} MB)",
-                    ]
+                stats_content.append(
+                    urwid.AttrMap(
+                        urwid.Text("Address Space", align="center"), "subtitle"
+                    )
+                )
+                stats_content.append(
+                    urwid.Text(f"  Range: 0x{min_addr:x} - 0x{max_addr:x}")
+                )
+                stats_content.append(
+                    urwid.Text(
+                        f"  Span: {addr_range:,} bytes ({addr_range / 1024 / 1024:.1f} MB)"
+                    )
+                )
+                stats_content.append(urwid.Divider())
+
+        # Top modules summary
+        if self.module_list:
+            stats_content.append(
+                urwid.AttrMap(
+                    urwid.Text("Top Modules by Coverage", align="center"), "subtitle"
+                )
+            )
+            for i, mod_info in enumerate(self.module_list[:5]):
+                mod_name = os.path.basename(mod_info["name"])
+                if len(mod_name) > 30:
+                    mod_name = mod_name[:27] + "..."
+                stats_content.append(
+                    urwid.Text(f"  {i+1}. {mod_name} ({mod_info['percentage']:.1f}%)")
                 )
 
-        # draw stats
-        for stat in stats[:content_height]:
-            print(f"| {stat:<{self.width - 4}} |")
-            lines_drawn += 1
+        pile = urwid.Pile(stats_content)
+        return urwid.Filler(pile, valign="top")
 
-        # fill remaining space
-        for _ in range(lines_drawn, content_height):
-            print("|" + " " * (self.width - 2) + "|")
+    def _update_view(self):
+        """Update the current view"""
+        if self.current_view == "modules":
+            content = self._create_modules_view()
+        elif self.current_view == "blocks":
+            content = self._create_blocks_view()
+        elif self.current_view == "stats":
+            content = self._create_stats_view()
+        else:
+            content = urwid.Filler(urwid.Text("Unknown view"), valign="middle")
 
-    def _draw_screen(self):
-        """draw the entire screen"""
-        clear_screen()
-        move_cursor(1, 1)
+        self.content_area.original_widget = content
 
-        self._draw_header()
+    def _update_header_footer(self):
+        """Update header and footer"""
+        # Update header with current filter
+        header = self._create_header()
+        footer = self._create_footer()
+
+        self.main_widget.header = header
+        self.main_widget.footer = footer
+
+    def _create_footer(self):
+        """Create enhanced footer with context-sensitive help"""
+        base_help = "[1]Modules [2]Blocks [3]Stats [f]Filter [r]Reset [h]Help [q]Quit"
 
         if self.current_view == "modules":
-            self._draw_modules_view()
+            view_help = " [↑↓]Navigate [Enter]Select"
+            if self.module_list:
+                module_count = len(self.module_list)
+                view_help += f" ({module_count} modules)"
         elif self.current_view == "blocks":
-            self._draw_blocks_view()
-        elif self.current_view == "stats":
-            self._draw_stats_view()
+            view_help = " [↑↓]Scroll"
+            if self.block_list:
+                block_count = len(self.block_list)
+                displayed = min(500, block_count)
+                if block_count > 500:
+                    view_help += f" (showing {displayed:,} of {block_count:,} blocks)"
+                else:
+                    view_help += f" ({block_count:,} blocks)"
+        else:
+            view_help = " [↑↓]Scroll"
 
-        self._draw_footer()
-        sys.stdout.flush()
+        help_text = base_help + view_help
 
-    def _get_filter_input(self):
-        """get filter input from user"""
-        show_cursor()
-        clear_screen()
-        print(f"Current filter: {self.current_filter}")
-        print("Enter new filter (empty to clear): ", end="")
-        sys.stdout.flush()
+        # Show current filter if active
+        if self.current_filter:
+            filter_info = f" | Filter: '{self.current_filter}'"
+            help_text += filter_info
 
-        try:
-            filter_text = input().strip()
-            self._apply_filter(filter_text)
-        except (KeyboardInterrupt, EOFError):
-            pass
+        return urwid.AttrMap(urwid.Text(help_text), "footer")
 
-        hide_cursor()
+    def _create_header(self):
+        """Create header with better formatting"""
+        filename = os.path.basename(self.filename)
 
-    def _handle_key(self, key: str) -> bool:
-        """handle keypress, return False to quit"""
+        # Create title with coverage summary
+        if self.current_filter:
+            title = f"Coverage Inspector: {filename} (filtered: {self.current_filter})"
+        else:
+            title = f"Coverage Inspector: {filename}"
+
+        # Add quick stats with percentages
+        total_blocks = len(self.coverage.data.basic_blocks)
+        filtered_blocks = len(self.filtered_coverage.data.basic_blocks)
+
+        if self.current_filter and total_blocks > 0:
+            filter_pct = (filtered_blocks / total_blocks) * 100
+            stats = f"Modules: {len(self.module_list)} | Blocks: {filtered_blocks:,}/{total_blocks:,} ({filter_pct:.1f}%)"
+        else:
+            stats = f"Modules: {len(self.module_list)} | Blocks: {filtered_blocks:,}"
+
+        # Create two-line header
+        header_content = urwid.Pile(
+            [
+                urwid.AttrMap(urwid.Text(title), "header_title"),
+                urwid.AttrMap(urwid.Text(stats, align="center"), "header_stats"),
+            ]
+        )
+
+        return header_content
+
+    def _handle_input(self, key):
+        """Enhanced input handling"""
         if key in ("q", "Q"):
-            return False
-
-        elif key in ("1", "m"):
+            raise urwid.ExitMainLoop()
+        elif key == "1":
             self.current_view = "modules"
-
-        elif key in ("2", "b"):
+            self._update_view()
+            self._update_header_footer()
+        elif key == "2":
             self.current_view = "blocks"
-
-        elif key in ("3", "s"):
+            self._update_view()
+            self._update_header_footer()
+        elif key == "3":
             self.current_view = "stats"
-
-        elif key == "f":
-            self._get_filter_input()
-
+            self._update_view()
+            self._update_header_footer()
+        elif key == "enter" and self.current_view == "modules":
+            self._handle_module_selection()
         elif key == "r":
             self._apply_filter("")
+        elif key == "f":
+            self._show_filter_dialog()
+        elif key in ("h", "?"):
+            self._show_help_dialog()
+        elif key == "ctrl l":
+            # Refresh screen
+            self._update_view()
+            self._update_header_footer()
+        else:
+            # Let the widget handle other keys (like arrow keys)
+            return key
 
-        elif (
-            key in ("j", "\x1b[B") and self.current_view == "modules"
-        ):  # j or down arrow
-            if self.module_list and self.selected_module < len(self.module_list) - 1:
-                self.selected_module += 1
+    def _handle_module_selection(self):
+        """Handle module selection in modules view"""
+        if not self.module_listbox or not self.module_list:
+            return
 
-        elif key in ("k", "\x1b[A") and self.current_view == "modules":  # k or up arrow
-            if self.module_list and self.selected_module > 0:
-                self.selected_module -= 1
+        # Get current focus position
+        _, focus_pos = self.module_listbox.get_focus()
 
-        elif (
-            key in ("\n", "\r") and self.current_view == "modules" and self.module_list
-        ):
-            # filter to selected module
-            selected_mod = self.module_list[self.selected_module]
-            self._apply_filter(selected_mod["name"])
-            self.current_view = "blocks"
+        # Skip header and divider (positions 0 and 1)
+        if focus_pos >= 2:
+            module_index = focus_pos - 2
+            if module_index < len(self.module_list):
+                selected_mod = self.module_list[module_index]
+                self._apply_filter(selected_mod["name"])
+                self.current_view = "blocks"
 
-        return True
+    def _show_filter_dialog(self):
+        """Show enhanced filter input dialog"""
+
+        def on_ok(_button):
+            filter_text = edit.get_edit_text()
+            self._apply_filter(filter_text)
+            self.main_loop.widget = self.main_widget
+
+        def on_cancel(_button):
+            self.main_loop.widget = self.main_widget
+
+        def on_clear(_button):
+            edit.set_edit_text("")
+
+        edit = urwid.Edit("Filter: ", self.current_filter)
+        ok_button = urwid.Button("Apply", on_ok)
+        clear_button = urwid.Button("Clear", on_clear)
+        cancel_button = urwid.Button("Cancel", on_cancel)
+
+        # Enhanced dialog with instructions
+        pile = urwid.Pile(
+            [
+                urwid.Text("Enter module name filter (case-insensitive):"),
+                urwid.Text("Examples: 'libc', 'kernel', 'myapp', 'lib'"),
+                urwid.Text("Tip: Use partial names to match multiple modules"),
+                urwid.Divider(),
+                edit,
+                urwid.Divider(),
+                urwid.Columns(
+                    [
+                        ("pack", ok_button),
+                        ("pack", urwid.Text("  ")),
+                        ("pack", clear_button),
+                        ("pack", urwid.Text("  ")),
+                        ("pack", cancel_button),
+                    ]
+                ),
+            ]
+        )
+
+        dialog = urwid.Filler(
+            urwid.LineBox(pile, title="Filter Modules"), valign="middle"
+        )
+        overlay = urwid.Overlay(
+            dialog,
+            self.main_widget,
+            align="center",
+            width=65,
+            valign="middle",
+            height=12,
+        )
+        self.main_loop.widget = overlay
+
+    def _show_help_dialog(self):
+        """Show help dialog"""
+
+        def on_close(_button):
+            self.main_loop.widget = self.main_widget
+
+        help_text = [
+            "Navigation:",
+            "  1, 2, 3     - Switch between views (Modules/Blocks/Stats)",
+            "  ↑ ↓         - Navigate lists",
+            "  Page Up/Dn  - Scroll faster through lists",
+            "  Enter       - Select module (in modules view)",
+            "",
+            "Filtering:",
+            "  f           - Open filter dialog",
+            "  r           - Reset/clear current filter",
+            "",
+            "Other:",
+            "  Ctrl+L      - Refresh screen",
+            "  h, ?        - Show this help",
+            "  q, Ctrl+C   - Quit",
+            "",
+            "Tips:",
+            "  • Use filters to narrow down large module lists",
+            "  • Module view shows coverage by module",
+            "  • Block view shows individual basic blocks",
+            "  • Stats view provides summary information",
+        ]
+
+        text_widgets = [urwid.Text(line) for line in help_text]
+        close_button = urwid.Button("Close", on_close)
+
+        pile = urwid.Pile(text_widgets + [urwid.Divider(), close_button])
+        dialog = urwid.Filler(urwid.LineBox(pile, title="Help"), valign="middle")
+
+        overlay = urwid.Overlay(
+            dialog,
+            self.main_widget,
+            align="center",
+            width=50,
+            valign="middle",
+            height=16,
+        )
+        self.main_loop.widget = overlay
 
     def run(self):
-        """run the tui inspector"""
+        """Run the enhanced TUI inspector"""
         try:
-            hide_cursor()
+            # Check if we have a proper terminal - but allow override for testing
+            import sys
+            import os
 
-            while True:
-                self._update_dimensions()
-                self._draw_screen()
+            if not sys.stdout.isatty() and not os.getenv("FORCE_TUI"):
+                print(
+                    "Error: TUI requires a terminal. Please run in an interactive terminal."
+                )
+                print("(You can set FORCE_TUI=1 to override this check)")
+                return
 
-                key = getch()
-                if not self._handle_key(key):
-                    break
+            # Create the main layout
+            self.content_area = urwid.WidgetPlaceholder(
+                urwid.Text("Loading...", align="center")
+            )
+
+            # Create main widget
+            header = self._create_header()
+            footer = self._create_footer()
+
+            self.main_widget = urwid.Frame(
+                self.content_area, header=header, footer=footer
+            )
+
+            # Simple color palette for maximum compatibility
+            palette = [
+                ("header_title", "white,bold", "dark blue"),
+                ("header_stats", "light cyan", "dark blue"),
+                ("footer", "white", "dark red"),
+                ("selected", "white,bold", "dark green"),
+                ("focus", "white", "dark blue"),
+                ("title", "white,bold", "default"),
+                ("subtitle", "yellow,bold", "default"),
+                ("header", "white,bold", "default"),
+                ("dim", "dark gray", "default"),
+                ("bold", "white,bold", "default"),
+            ]
+
+            # Initial view
+            self._update_view()
+
+            # Run the main loop
+            self.main_loop = urwid.MainLoop(
+                self.main_widget, palette, unhandled_input=self._handle_input
+            )
+            self.main_loop.run()
 
         except KeyboardInterrupt:
             pass
-        finally:
-            show_cursor()
-            clear_screen()
+        except Exception as e:
+            # Fallback if urwid fails
+            print(f"TUI failed to start: {e}")
+            print("Terminal may not support the required features.")
+            print()
+            print("Alternative commands:")
+            print(
+                f"  poetry run covtool info '{self.filename}' - Basic coverage information"
+            )
+            print("  poetry run covtool --help - Show all available commands")
+            print()
+            print("For TUI support, try running in a different terminal or")
+            print("use a terminal that supports full ANSI escape sequences.")
+            return
 
 
 def run_inspector(coverage: CoverageSet, filename: str) -> None:
-    """run the coverage inspector tui"""
+    """Run the coverage inspector TUI"""
     inspector = CoverageInspector(coverage, filename)
     inspector.run()
