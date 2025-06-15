@@ -134,14 +134,22 @@ class CoverageSet:
                 modules=[],
                 basic_blocks=[],
                 module_version=ModuleTableVersion.V2,
+                hit_counts=None,
             )
             return CoverageSet(empty_data)
 
         matching_ids = {m.id for m in matching_modules}
-        filtered_blocks = [
-            b for b in self.data.basic_blocks if b.module_id in matching_ids
-        ]
-
+        
+        # Filter blocks and preserve corresponding hit counts
+        filtered_blocks = []
+        filtered_hit_counts = []
+        
+        for i, block in enumerate(self.data.basic_blocks):
+            if block.module_id in matching_ids:
+                filtered_blocks.append(block)
+                if self.data.has_hit_counts():
+                    filtered_hit_counts.append(self.data.hit_counts[i])
+        
         # create new coverage data
         from .drcov import CoverageData, FileHeader, ModuleTableVersion
 
@@ -150,6 +158,7 @@ class CoverageSet:
             modules=matching_modules,
             basic_blocks=filtered_blocks,
             module_version=self.data.module_version,
+            hit_counts=filtered_hit_counts if filtered_hit_counts else None,
         )
 
         return CoverageSet(filtered_data)

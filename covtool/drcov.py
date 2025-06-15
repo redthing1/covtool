@@ -47,11 +47,17 @@ from typing import BinaryIO, Dict, List, Optional, TextIO, Tuple, Type, TypeVar,
 # --- Constants ---
 _SUPPORTED_FILE_VERSION = 2
 _BB_ENTRY_SIZE = 8
+_HIT_COUNT_ENTRY_SIZE = 4
 _VERSION_PREFIX = "DRCOV VERSION: "
 _FLAVOR_PREFIX = "DRCOV FLAVOR: "
 _MODULE_TABLE_PREFIX = "Module Table: "
 _BB_TABLE_PREFIX = "BB Table: "
+_HIT_COUNT_TABLE_PREFIX = "Hit Count Table: "
 _COLUMNS_PREFIX = "Columns: "
+
+# Flavor constants
+_FLAVOR_STANDARD = "drcov"
+_FLAVOR_WITH_HITS = "drcov-hits"
 
 # --- Public API ---
 
@@ -76,11 +82,15 @@ class FileHeader:
     """DrCov file header containing version and tool information."""
 
     version: int = _SUPPORTED_FILE_VERSION
-    flavor: str = "drcov"
+    flavor: str = _FLAVOR_STANDARD
 
     def to_string(self) -> str:
         """Serializes the header to its string representation."""
         return f"{_VERSION_PREFIX}{self.version}\n" f"{_FLAVOR_PREFIX}{self.flavor}\n"
+
+    def supports_hit_counts(self) -> bool:
+        """Returns True if this header indicates hit count support."""
+        return self.flavor == _FLAVOR_WITH_HITS
 
 
 @dataclasses.dataclass
@@ -130,6 +140,7 @@ class CoverageData:
     modules: List[ModuleEntry]
     basic_blocks: List[BasicBlock]
     module_version: ModuleTableVersion
+    hit_counts: Optional[List[int]] = None  # Parallel array to basic_blocks
 
     def find_module(self, module_id: int) -> Optional[ModuleEntry]:
         """Finds a module by its ID."""
@@ -185,8 +196,47 @@ class CoverageData:
         
         if permissive and invalid_blocks:
             print(f"Warning: Filtering out {len(invalid_blocks)} basic blocks with invalid module IDs")
-            valid_blocks = [bb for bb in self.basic_blocks if bb.module_id in module_ids]
-            self.basic_blocks = valid_blocks
+            valid_indices = [
+                i for i, bb in enumerate(self.basic_blocks) if bb.module_id in module_ids
+            ]
+            self.basic_blocks = [self.basic_blocks[i] for i in valid_indices]
+            if self.hit_counts:
+                self.hit_counts = [self.hit_counts[i] for i in valid_indices]
+
+        # Validate hit counts if present
+        if self.hit_counts is not None:
+            if len(self.hit_counts) != len(self.basic_blocks):
+                if permissive:
+                    print(
+                        f"Warning: Hit count array length ({len(self.hit_counts)}) "
+                        f"does not match basic block count ({len(self.basic_blocks)})"
+                    )
+                    if len(self.hit_counts) > len(self.basic_blocks):
+                        self.hit_counts = self.hit_counts[: len(self.basic_blocks)]
+                    else:
+                        missing = len(self.basic_blocks) - len(self.hit_counts)
+                        self.hit_counts.extend([1] * missing)
+                else:
+                    raise DrCovError(
+                        f"Hit count array length ({len(self.hit_counts)}) "
+                        f"does not match basic block count ({len(self.basic_blocks)})"
+                    )
+
+    def has_hit_counts(self) -> bool:
+        """Returns True if hit count data is available."""
+        return self.hit_counts is not None
+
+    def get_hit_count(self, block_index: int) -> int:
+        """Gets the hit count for a basic block by index. Returns 1 if no hit counts."""
+        if self.hit_counts and 0 <= block_index < len(self.hit_counts):
+            return self.hit_counts[block_index]
+        return 1
+
+    def get_blocks_with_hits(self) -> List[Tuple[BasicBlock, int]]:
+        """Returns a list of (BasicBlock, hit_count) tuples."""
+        if self.hit_counts:
+            return list(zip(self.basic_blocks, self.hit_counts))
+        return [(block, 1) for block in self.basic_blocks]
 
 
 class CoverageBuilder:
@@ -220,11 +270,21 @@ class CoverageBuilder:
         )
         return self
 
-    def add_coverage(self, module_id: int, offset: int, size: int) -> "CoverageBuilder":
+    def add_coverage(
+        self, module_id: int, offset: int, size: int, hit_count: int = 1
+    ) -> "CoverageBuilder":
         """Adds a new basic block to the coverage data."""
         self._data.basic_blocks.append(
             BasicBlock(start=offset, size=size, module_id=module_id)
         )
+
+        # Initialize hit counts list if this is the first block with non-default hit count
+        if self._data.hit_counts is None and hit_count != 1:
+            self._data.hit_counts = [1] * (len(self._data.basic_blocks) - 1)
+
+        if self._data.hit_counts is not None:
+            self._data.hit_counts.append(hit_count)
+
         return self
 
     def add_basic_blocks(self, blocks: List[BasicBlock]) -> "CoverageBuilder":
@@ -235,6 +295,26 @@ class CoverageBuilder:
     def clear_coverage(self) -> "CoverageBuilder":
         """Removes all basic blocks."""
         self._data.basic_blocks.clear()
+        self._data.hit_counts = None
+        return self
+
+    def set_hit_counts(self, hit_counts: List[int]) -> "CoverageBuilder":
+        """Sets hit counts for all basic blocks. Must match basic block count."""
+        if len(hit_counts) != len(self._data.basic_blocks):
+            raise ValueError(
+                f"Hit count array length ({len(hit_counts)}) "
+                f"must match basic block count ({len(self._data.basic_blocks)})"
+            )
+        self._data.hit_counts = hit_counts[:]
+        # Update flavor to indicate hit count support
+        self._data.header.flavor = _FLAVOR_WITH_HITS
+        return self
+
+    def enable_hit_counts(self) -> "CoverageBuilder":
+        """Enables hit count tracking with default counts of 1."""
+        if self._data.hit_counts is None:
+            self._data.hit_counts = [1] * len(self._data.basic_blocks)
+            self._data.header.flavor = _FLAVOR_WITH_HITS
         return self
 
     def data(self) -> CoverageData:
@@ -289,7 +369,15 @@ class _Parser:
                     start, size, mod_id = struct.unpack("<IHH", entry_data)
                     basic_blocks.append(BasicBlock(start, size, mod_id))
 
-        data = CoverageData(header, modules, basic_blocks, module_version)
+        # Try to read hit count table if present
+        hit_counts = None
+        try:
+            hit_counts = _Parser._parse_hit_count_table(stream, len(basic_blocks))
+        except (DrCovError, EOFError):
+            # No hit count table found, which is fine for backward compatibility
+            pass
+
+        data = CoverageData(header, modules, basic_blocks, module_version, hit_counts)
         data.validate(permissive=permissive)
         return data
 
@@ -391,6 +479,132 @@ class _Parser:
         return modules, version
 
     @staticmethod
+    def _parse_hit_count_table(stream: Union[TextIO, str], expected_count: int) -> List[int]:
+        """Parse hit count table. Returns list of hit counts or raises DrCovError if not found."""
+        try:
+            # Handle both TextIO streams and string content
+            if isinstance(stream, str):
+                lines = stream.split('\n')
+                if not lines or not lines[0].strip():
+                    raise DrCovError("No hit count table found")
+                hit_line = lines[0].strip()
+                remaining_content = '\n'.join(lines[1:]) if len(lines) > 1 else ""
+            else:
+                hit_line = stream.readline().strip()
+                if not hit_line:
+                    raise DrCovError("No hit count table found")
+                remaining_content = stream.read()
+            
+            if not hit_line.startswith(_HIT_COUNT_TABLE_PREFIX):
+                raise DrCovError("Invalid hit count table header")
+            
+            # Parse header: "Hit Count Table: version 1, count <N>"
+            header_parts = hit_line[len(_HIT_COUNT_TABLE_PREFIX):].strip().split(',')
+            if len(header_parts) != 2:
+                raise DrCovError("Malformed hit count table header")
+            
+            version_part = header_parts[0].strip()
+            count_part = header_parts[1].strip()
+            
+            if not version_part.startswith("version "):
+                raise DrCovError("Missing version in hit count table header")
+            
+            version = int(version_part[8:])  # Skip "version "
+            if version != 1:
+                raise DrCovError(f"Unsupported hit count table version: {version}")
+            
+            if not count_part.startswith("count "):
+                raise DrCovError("Missing count in hit count table header")
+            
+            count = int(count_part[6:])  # Skip "count "
+            if count != expected_count:
+                raise DrCovError(
+                    f"Hit count table count ({count}) does not match basic block count ({expected_count})"
+                )
+            
+            if count == 0:
+                return []
+            
+            # Read binary hit count data - handle different stream types
+            if isinstance(stream, str) or not hasattr(stream, 'buffer'):
+                # For string content or StringIO, we need the binary data as bytes
+                binary_data = remaining_content.encode('latin1')[:count * _HIT_COUNT_ENTRY_SIZE]
+            else:
+                # For real file streams with buffer
+                binary_stream = stream.buffer
+                binary_data = binary_stream.read(count * _HIT_COUNT_ENTRY_SIZE)
+                
+            if len(binary_data) != count * _HIT_COUNT_ENTRY_SIZE:
+                raise DrCovError("Failed to read complete hit count table binary data")
+            
+            hit_counts = []
+            for i in range(count):
+                offset = i * _HIT_COUNT_ENTRY_SIZE
+                entry_data = binary_data[offset : offset + _HIT_COUNT_ENTRY_SIZE]
+                hit_count = struct.unpack("<I", entry_data)[0]
+                hit_counts.append(hit_count)
+            
+            return hit_counts
+        
+        except (ValueError, struct.error) as e:
+            raise DrCovError(f"Error parsing hit count table: {e}")
+
+    @staticmethod
+    def _parse_hit_count_table_from_binary(data: bytes, expected_count: int) -> List[int]:
+        """Parse hit count table from raw binary data with text header."""
+        try:
+            text_part = data.decode("utf-8", errors="ignore")
+            lines = text_part.split("\n")
+
+            # Find the header line
+            header_line = None
+            header_end_pos = 0
+            for i, line in enumerate(lines):
+                if line.strip().startswith(_HIT_COUNT_TABLE_PREFIX):
+                    header_line = line.strip()
+                    header_end_pos = len("\n".join(lines[: i + 1]).encode("utf-8")) + 1
+                    break
+
+            if not header_line:
+                raise DrCovError("Hit count table header not found")
+
+            # Parse header: "Hit Count Table: version 1, count <N>"
+            header_suffix = header_line[len(_HIT_COUNT_TABLE_PREFIX) :].strip()
+            parts = header_suffix.split(",")
+            if len(parts) != 2 or not parts[1].strip().startswith("count "):
+                raise DrCovError("Malformed hit count table header")
+
+            count = int(parts[1].strip()[6:])  # Skip "count "
+            if count != expected_count:
+                raise DrCovError(
+                    f"Hit count table count ({count}) does not match "
+                    f"basic block count ({expected_count})"
+                )
+
+            if count == 0:
+                return []
+
+            # Extract binary data
+            binary_start = header_end_pos
+            binary_end = binary_start + count * _HIT_COUNT_ENTRY_SIZE
+            binary_data = data[binary_start:binary_end]
+
+            if len(binary_data) != count * _HIT_COUNT_ENTRY_SIZE:
+                raise DrCovError("Failed to read complete hit count table binary data")
+
+            hit_counts = []
+            for i in range(count):
+                offset = i * _HIT_COUNT_ENTRY_SIZE
+                entry_data = binary_data[offset : offset + _HIT_COUNT_ENTRY_SIZE]
+                hit_count = struct.unpack("<I", entry_data)[0]
+                hit_counts.append(hit_count)
+
+            return hit_counts
+
+        except (ValueError, struct.error, UnicodeDecodeError) as e:
+            raise DrCovError(f"Error parsing hit count table from binary: {e}")
+
+    @staticmethod
     def parse_text_only(stream: TextIO, permissive: bool = False) -> CoverageData:
         """Parse a drcov file that has no BB table."""
         header = _Parser._parse_header(stream)
@@ -402,7 +616,7 @@ class _Parser:
         modules, module_version = _Parser._parse_module_table(stream)
         basic_blocks = []  # No BB table
 
-        data = CoverageData(header, modules, basic_blocks, module_version)
+        data = CoverageData(header, modules, basic_blocks, module_version, None)
         data.validate(permissive=permissive)
         return data
 
@@ -446,7 +660,27 @@ class _Parser:
                     start, size, mod_id = struct.unpack("<IHH", entry_data)
                     basic_blocks.append(BasicBlock(start, size, mod_id))
 
-        data = CoverageData(header, modules, basic_blocks, module_version)
+        # Try to read hit count table from the remaining binary stream
+        hit_counts = None
+        try:
+            # Check if there's more data in the binary stream
+            remaining_data = bb_stream.read()
+            if remaining_data:
+                # Look for hit count table header in the remaining data
+                try:
+                    text_part = remaining_data.decode("utf-8", errors="ignore")
+                    if _HIT_COUNT_TABLE_PREFIX in text_part:
+                        # Parse the hit count table from binary data
+                        hit_counts = _Parser._parse_hit_count_table_from_binary(
+                            remaining_data, len(basic_blocks)
+                        )
+                except UnicodeDecodeError:
+                    pass
+        except Exception:
+            # No hit count table found, which is fine for backward compatibility
+            pass
+
+        data = CoverageData(header, modules, basic_blocks, module_version, hit_counts)
         data.validate(permissive=permissive)
         return data
 
@@ -488,6 +722,10 @@ class _Writer:
             binary_stream = stream
 
         _Writer._write_bb_table(data.basic_blocks, binary_stream)
+        
+        # Write hit count table if present
+        if data.hit_counts is not None:
+            _Writer._write_hit_count_table(data.hit_counts, binary_stream)
 
     @staticmethod
     def _get_columns_string(data: CoverageData) -> str:
@@ -564,6 +802,18 @@ class _Writer:
         packed_data = b"".join(
             struct.pack("<IHH", bb.start, bb.size, bb.module_id) for bb in blocks
         )
+        stream.write(packed_data)
+
+    @staticmethod
+    def _write_hit_count_table(hit_counts: List[int], stream: BinaryIO):
+        """Write hit count table to stream."""
+        header = f"{_HIT_COUNT_TABLE_PREFIX}version 1, count {len(hit_counts)}\n"
+        stream.write(header.encode("utf-8"))
+
+        if not hit_counts:
+            return
+
+        packed_data = b"".join(struct.pack("<I", count) for count in hit_counts)
         stream.write(packed_data)
 
 

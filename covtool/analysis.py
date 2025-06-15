@@ -58,11 +58,13 @@ def _generate_coverage_data(
         "summary": {
             "total_blocks": len(coverage),
             "total_modules": len(coverage.modules),
+            "has_hit_counts": coverage.data.has_hit_counts(),
         },
         "modules": [],
         "address_space": {},
         "block_size_distribution": [],
         "sample_blocks": {},
+        "hit_count_stats": {},
     }
 
     if coverage.data.basic_blocks:
@@ -81,6 +83,36 @@ def _generate_coverage_data(
                 "max_block_size": max_size,
             }
         )
+        
+        # hit count statistics
+        if coverage.data.has_hit_counts():
+            hit_counts = coverage.data.hit_counts
+            total_hits = sum(hit_counts)
+            avg_hits = total_hits / len(hit_counts)
+            min_hits = min(hit_counts)
+            max_hits = max(hit_counts)
+            
+            # Hit count distribution
+            hit_count_ranges = {
+                "1": sum(1 for h in hit_counts if h == 1),
+                "2-10": sum(1 for h in hit_counts if 2 <= h <= 10),
+                "11-100": sum(1 for h in hit_counts if 11 <= h <= 100),
+                "101-1000": sum(1 for h in hit_counts if 101 <= h <= 1000),
+                "1001+": sum(1 for h in hit_counts if h > 1000),
+            }
+            
+            data["hit_count_stats"] = {
+                "total_hits": total_hits,
+                "average_hits": round(avg_hits, 1),
+                "median_hits": sorted(hit_counts)[len(hit_counts) // 2],
+                "min_hits": min_hits,
+                "max_hits": max_hits,
+                "distribution": hit_count_ranges,
+            }
+        else:
+            data["hit_count_stats"] = {
+                "status": "No hit count data (using default hit count of 1)"
+            }
 
         # address space analysis
         addresses = coverage.get_absolute_addresses()
@@ -152,6 +184,9 @@ def _generate_coverage_data(
                 block_data = {"offset": f"0x{block.start:08x}", "size": block.size}
                 if abs_addr:
                     block_data["absolute_address"] = f"0x{abs_addr:x}"
+                # Add hit count information
+                block_index = coverage.data.basic_blocks.index(block)
+                block_data["hits"] = coverage.data.get_hit_count(block_index)
                 data["sample_blocks"][module_name].append(block_data)
 
     return data
@@ -180,6 +215,7 @@ def print_detailed_info_rich(
     summary = data["summary"]
     summary_table.add_row("Total Basic Blocks", f"{summary['total_blocks']:,}")
     summary_table.add_row("Total Modules", f"{summary['total_modules']:,}")
+    summary_table.add_row("Hit Count Support", "Yes" if summary['has_hit_counts'] else "No (defaults to 1)")
 
     if "total_coverage_size" in summary:
         summary_table.add_row(
@@ -195,6 +231,61 @@ def print_detailed_info_rich(
 
     console.print(summary_table)
     console.print()
+    
+    # hit count statistics
+    if data["hit_count_stats"]:
+        hit_stats = data["hit_count_stats"]
+        if "status" in hit_stats:
+            # No hit count data
+            hit_table = Table(
+                title="[bold]Hit Count Information[/bold]", show_header=False, box=None
+            )
+            hit_table.add_column("Status", style="yellow")
+            hit_table.add_row(hit_stats["status"])
+            console.print(hit_table)
+        else:
+            # Has hit count data
+            hit_table = Table(
+                title="[bold]Hit Count Statistics[/bold]", show_header=False, box=None
+            )
+            hit_table.add_column("Metric", style="bold")
+            hit_table.add_column("Value", style="green")
+            
+            hit_table.add_row("Total Hits", f"{hit_stats['total_hits']:,}")
+            hit_table.add_row("Average Hits per Block", f"{hit_stats['average_hits']}")
+            hit_table.add_row("Median Hits per Block", f"{hit_stats['median_hits']:,}")
+            hit_table.add_row("Hit Count Range", f"{hit_stats['min_hits']} - {hit_stats['max_hits']:,}")
+            
+            console.print(hit_table)
+            
+            # Hit count distribution
+            dist_table = Table(
+                title="[bold]Hit Count Distribution[/bold]"
+            )
+            dist_table.add_column("Range", style="cyan")
+            dist_table.add_column("Blocks", justify="right", style="yellow")
+            dist_table.add_column("Percentage", justify="right", style="green")
+            dist_table.add_column("Bar", style="blue")
+            
+            total_blocks = summary['total_blocks']
+            max_count = max(hit_stats['distribution'].values()) if hit_stats['distribution'] else 1
+            
+            for range_name, count in hit_stats['distribution'].items():
+                if count > 0:  # Only show ranges with blocks
+                    percentage = (count / total_blocks) * 100
+                    bar_width = int((count / max_count) * 15)
+                    bar = "█" * bar_width
+                    
+                    dist_table.add_row(
+                        range_name,
+                        f"{count:,}",
+                        f"{percentage:.1f}%",
+                        f"[blue]{bar}[/blue]"
+                    )
+            
+            console.print(dist_table)
+        
+        console.print()
 
     # address space info
     if data["address_space"]:
@@ -275,7 +366,8 @@ def print_detailed_info_rich(
                         if "absolute_address" in block
                         else ""
                     )
-                    tree.add(f"{block['offset']} ({block['size']}b){addr_info}")
+                    hit_info = f" hits={block['hits']}" if "hits" in block else ""
+                    tree.add(f"{block['offset']} ({block['size']}b){addr_info}{hit_info}")
                 console.print(tree)
         console.print()
 
