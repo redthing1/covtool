@@ -68,11 +68,11 @@ class CoverageInspector:
     def _format_size(self, size):
         """Format size with appropriate units"""
         if size >= self.SIZE_MB_THRESHOLD:
-            return f"{size / self.SIZE_MB_THRESHOLD:.1f}MB"
+            return f"{size / self.SIZE_MB_THRESHOLD:.1f} MB"
         elif size >= self.SIZE_KB_THRESHOLD:
-            return f"{size / self.SIZE_KB_THRESHOLD:.1f}KB"
+            return f"{size / self.SIZE_KB_THRESHOLD:.1f} KB"
         else:
-            return f"{size}B"
+            return f"{size} B"
     
     def _format_hit_count(self, hits):
         """Format hit count with K suffix for large numbers"""
@@ -341,7 +341,7 @@ class CoverageInspector:
         min_size = min(block.size for block in cov.data.basic_blocks)
         max_size = max(block.size for block in cov.data.basic_blocks)
         
-        total_size_str = self._format_size(total_size).replace('B', ' bytes').replace('MB', ' MB').replace('KB', ' KB')
+        total_size_str = self._format_size(total_size).replace(' B', ' bytes')
         
         return [
             f"Total coverage size: {total_size_str}",
