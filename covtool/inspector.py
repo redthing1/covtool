@@ -65,6 +65,17 @@ class CoverageInspector:
             block_count = len(blocks)
             total_size = sum(block.size for block in blocks)
             percentage = (block_count / total_blocks * 100) if total_blocks > 0 else 0
+            
+            # Calculate hit count statistics for this module
+            module_hits = 0
+            if self.filtered_coverage.data.has_hit_counts():
+                for block in blocks:
+                    block_index = self.filtered_coverage.data.basic_blocks.index(block)
+                    hits = self.filtered_coverage.data.get_hit_count(block_index)
+                    module_hits += hits
+            else:
+                # Default hit count of 1 for each block
+                module_hits = block_count
 
             self.module_list.append(
                 {
@@ -73,6 +84,7 @@ class CoverageInspector:
                     "count": block_count,
                     "size": total_size,
                     "percentage": percentage,
+                    "hits": module_hits,
                 }
             )
 
@@ -81,18 +93,14 @@ class CoverageInspector:
         self.block_list = []
 
         # Create block list with hit information
-        blocks = self.filtered_coverage.data.basic_blocks
+        blocks_with_hits = self.filtered_coverage.data.get_blocks_with_hits()
         
-        for block in blocks:
+        for block, hits in blocks_with_hits:
             module = self.filtered_coverage.data.find_module(block.module_id)
             module_name = (
                 os.path.basename(module.path) if module else f"module_{block.module_id}"
             )
             abs_addr = module.base + block.start if module else None
-            
-            # For DrCov format, each block has a hit count of 1 (executed)
-            # In the future, this could be extended to support actual hit counts
-            hits = 1
             
             # Apply hitcount filter (exact match)
             if self.hitcount_filter is None or hits == self.hitcount_filter:
@@ -137,8 +145,11 @@ class CoverageInspector:
         # Create module list items
         items = []
 
-        # Header
-        header_text = f"{'Module':<40} {'Blocks':<10} {'Size':<12} {'%':<8}"
+        # Header - include hit count column if available
+        if self.filtered_coverage.data.has_hit_counts():
+            header_text = f"{'Module':<45} {'Blocks':<8} {'Size':<10} {'%':<8} {'Hits':<10}"
+        else:
+            header_text = f"{'Module':<50} {'Blocks':<10} {'Size':<12} {'%':<8}"
         header = urwid.AttrMap(urwid.Text(header_text), "header")
         items.append(header)
         items.append(urwid.Divider("═"))
@@ -146,9 +157,7 @@ class CoverageInspector:
         # Module entries
         for i, mod_info in enumerate(self.module_list):
             mod_name = mod_info["name"]
-            if len(mod_name) > 38:
-                mod_name = mod_name[:35] + "..."
-
+            
             # Format size with units
             size = mod_info["size"]
             if size >= 1024 * 1024:
@@ -158,7 +167,22 @@ class CoverageInspector:
             else:
                 size_str = f"{size}B"
 
-            line_text = f"{mod_name:<40} {mod_info['count']:<10,} {size_str:<12} {mod_info['percentage']:<7.1f}%"
+            if self.filtered_coverage.data.has_hit_counts():
+                # Truncate module name to fit hit count column
+                if len(mod_name) > 43:
+                    mod_name = mod_name[:40] + "..."
+                    
+                # Format hit count numbers
+                hits_str = f"{mod_info['hits']:,}"
+                if len(hits_str) > 10:
+                    hits_str = f"{mod_info['hits']/1000:.1f}K"
+                
+                line_text = f"{mod_name:<45} {mod_info['count']:<8,} {size_str:<10} {mod_info['percentage']:<7.1f}% {hits_str:<10}"
+            else:
+                # Original layout for files without hit counts
+                if len(mod_name) > 48:
+                    mod_name = mod_name[:45] + "..."
+                line_text = f"{mod_name:<50} {mod_info['count']:<10,} {size_str:<12} {mod_info['percentage']:<7.1f}%"
 
             # Create selectable text widget
             item = SelectableText(line_text, index=i)
@@ -185,9 +209,12 @@ class CoverageInspector:
         items = []
 
         # Header with hits column and sort indicator
-        sort_indicator = " ↓" if self.block_sort_mode == "hits" else ""
+        sort_indicator = " ↓" if self.block_sort_mode == "hits" else " ↑"
+        hit_col_header = f"Hits{sort_indicator}" if self.block_sort_mode == "hits" else "Hits"
+        addr_col_header = f"Offset{sort_indicator}" if self.block_sort_mode == "address" else "Offset"
+        
         header_text = (
-            f"{'Offset':<12} {'Size':<6} {'Hits':<6}{sort_indicator} {'Module':<22} {'Absolute Address':<16}"
+            f"{'Module':<35} {addr_col_header:<12} {'Address':<16} {'Size':<6} {hit_col_header:<8}"
         )
         header = urwid.AttrMap(urwid.Text(header_text), "header")
         items.append(header)
@@ -202,11 +229,22 @@ class CoverageInspector:
             )
 
             mod_name = block_info["module_name"]
-            if len(mod_name) > 23:
-                mod_name = mod_name[:20] + "..."
 
+            # Format hit count without visual indicators
+            hits = block_info['hits']
+            if hits >= 10000:
+                hits_str = f"{hits/1000:.1f}K"
+            elif hits >= 1000:
+                hits_str = f"{hits:,}"
+            else:
+                hits_str = str(hits)
+                
+            # Adjust module name truncation for wider column
+            if len(mod_name) > 35:
+                mod_name = mod_name[:32] + "..."
+            
             line_text = (
-                f"0x{block.start:08x} {block.size:<6} {block_info['hits']:<6} {mod_name:<22} {abs_addr_str}"
+                f"{mod_name:<35} 0x{block.start:08x} {abs_addr_str:<16} {block.size:<6} {hits_str:<8}"
             )
             item = SelectableText(line_text)
             item = urwid.AttrMap(item, None, focus_map="focus")
@@ -246,6 +284,7 @@ class CoverageInspector:
         basic_stats = [
             f"Total basic blocks: {len(cov):,}",
             f"Total modules: {len(cov.modules):,}",
+            f"Hit count support: {'Yes' if cov.data.has_hit_counts() else 'No (defaults to 1)'}",
         ]
 
         if cov.data.basic_blocks:
@@ -269,6 +308,22 @@ class CoverageInspector:
                     f"Block size range: {min_size} - {max_size} bytes",
                 ]
             )
+            
+            # Add hit count statistics if available
+            if cov.data.has_hit_counts():
+                hit_counts = cov.data.hit_counts
+                total_hits = sum(hit_counts)
+                avg_hits = total_hits / len(hit_counts)
+                min_hits = min(hit_counts)
+                max_hits = max(hit_counts)
+                
+                basic_stats.extend(
+                    [
+                        f"Total hits: {total_hits:,}",
+                        f"Average hits per block: {avg_hits:.1f}",
+                        f"Hit count range: {min_hits} - {max_hits:,}",
+                    ]
+                )
 
         for stat in basic_stats:
             stats_content.append(urwid.Text(f"  {stat}"))
@@ -297,6 +352,33 @@ class CoverageInspector:
                     )
                 )
                 stats_content.append(urwid.Divider())
+        
+        # Hit count distribution if available
+        if cov.data.has_hit_counts():
+            hit_counts = cov.data.hit_counts
+            hit_ranges = {
+                "1 hit": sum(1 for h in hit_counts if h == 1),
+                "2-10 hits": sum(1 for h in hit_counts if 2 <= h <= 10),
+                "11-100 hits": sum(1 for h in hit_counts if 11 <= h <= 100),
+                "101-1000 hits": sum(1 for h in hit_counts if 101 <= h <= 1000),
+                "1000+ hits": sum(1 for h in hit_counts if h > 1000),
+            }
+            
+            stats_content.append(
+                urwid.AttrMap(
+                    urwid.Text("Hit Count Distribution", align="center"), "subtitle"
+                )
+            )
+            
+            total_blocks = len(hit_counts)
+            for range_name, count in hit_ranges.items():
+                if count > 0:
+                    percentage = (count / total_blocks) * 100
+                    stats_content.append(
+                        urwid.Text(f"  {range_name}: {count:,} blocks ({percentage:.1f}%)")
+                    )
+            
+            stats_content.append(urwid.Divider())
 
         # Top modules summary
         if self.module_list:
@@ -343,14 +425,14 @@ class CoverageInspector:
         base_help = "[1]Modules [2]Blocks [3]Stats [f]Filter [r]Reset [h]Help [q]Quit"
 
         if self.current_view == "modules":
-            view_help = " [↑↓]Navigate [Enter]Select"
+            view_help = " [j/k]↑↓ [J/K]Page [Enter]Select"
             if self.module_list:
                 module_count = len(self.module_list)
                 view_help += f" ({module_count} modules)"
         elif self.current_view == "blocks":
-            view_help = " [↑↓]Scroll [s]Sort [c]Filter hits"
+            view_help = " [j/k]↑↓ [J/K]Page [s]Sort [c]Filter hits"
         else:
-            view_help = " [↑↓]Scroll"
+            view_help = " [j/k]↑↓ [J/K]Page"
 
         help_text = base_help + view_help
 
@@ -374,12 +456,22 @@ class CoverageInspector:
         # Add quick stats with percentages
         total_blocks = len(self.coverage.data.basic_blocks)
         filtered_blocks = len(self.filtered_coverage.data.basic_blocks)
+        
+        # Add hit count info to stats
+        hit_info = ""
+        if self.coverage.data.has_hit_counts():
+            total_hits = sum(self.coverage.data.hit_counts)
+            if self.current_filter:
+                filtered_hits = sum(self.coverage.data.get_hit_count(i) for i, block in enumerate(self.coverage.data.basic_blocks) if block in self.filtered_coverage.blocks)
+                hit_info = f" | Hits: {filtered_hits:,}/{total_hits:,}"
+            else:
+                hit_info = f" | Hits: {total_hits:,}"
 
         if self.current_filter and total_blocks > 0:
             filter_pct = (filtered_blocks / total_blocks) * 100
-            stats = f"Modules: {len(self.module_list)} | Blocks: {filtered_blocks:,}/{total_blocks:,} ({filter_pct:.1f}%)"
+            stats = f"Modules: {len(self.module_list)} | Blocks: {filtered_blocks:,}/{total_blocks:,} ({filter_pct:.1f}%){hit_info}"
         else:
-            stats = f"Modules: {len(self.module_list)} | Blocks: {filtered_blocks:,}"
+            stats = f"Modules: {len(self.module_list)} | Blocks: {filtered_blocks:,}{hit_info}"
 
         # Add view-specific status for blocks view
         view_status = ""
@@ -400,6 +492,12 @@ class CoverageInspector:
             
             if self.hitcount_filter is not None:
                 status_parts.append(f"hits={self.hitcount_filter}")
+            
+            # Add general hit count info
+            if self.filtered_coverage.data.has_hit_counts():
+                status_parts.append("with hit counts")
+            else:
+                status_parts.append("no hit counts")
             
             view_status = " | ".join(status_parts)
 
@@ -448,9 +546,43 @@ class CoverageInspector:
             # Refresh screen
             self._update_view()
             self._update_header_footer()
+        elif key in ("j", "k", "J", "K"):
+            # Vi-style navigation
+            self._handle_vi_navigation(key)
         else:
             # Let the widget handle other keys (like arrow keys)
             return key
+
+    def _handle_vi_navigation(self, key):
+        """Handle vi-style navigation (j/k/J/K)"""
+        # Get the current focused widget
+        focused_widget = None
+        
+        if self.current_view == "modules" and self.module_listbox:
+            focused_widget = self.module_listbox
+        elif self.current_view == "blocks" or self.current_view == "stats":
+            # For blocks and stats views, we need to get the listbox from content area
+            if hasattr(self.content_area, 'original_widget'):
+                focused_widget = self.content_area.original_widget
+                if hasattr(focused_widget, 'original_widget'):
+                    focused_widget = focused_widget.original_widget
+        
+        if not focused_widget or not hasattr(focused_widget, 'keypress'):
+            return
+        
+        # Handle different navigation keys
+        if key == "j":
+            # Move down one line
+            focused_widget.keypress((80, 24), "down")
+        elif key == "k":
+            # Move up one line  
+            focused_widget.keypress((80, 24), "up")
+        elif key == "J":
+            # Page down
+            focused_widget.keypress((80, 24), "page down")
+        elif key == "K":
+            # Page up
+            focused_widget.keypress((80, 24), "page up")
 
     def _handle_module_selection(self):
         """Handle module selection in modules view"""
@@ -530,8 +662,9 @@ class CoverageInspector:
         help_text = [
             "Navigation:",
             "  1, 2, 3     - Switch between views (Modules/Blocks/Stats)",
-            "  ↑ ↓         - Navigate lists",
+            "  ↑ ↓ / j k   - Navigate lists (line by line)",
             "  Page Up/Dn  - Scroll faster through lists",
+            "  J K         - Page up/down (vi-style)",
             "  Enter       - Select module (in modules view)",
             "",
             "Filtering:",
@@ -612,12 +745,20 @@ class CoverageInspector:
         cancel_button = urwid.Button("Cancel", on_cancel)
 
         # Enhanced dialog with instructions
+        has_hit_counts = self.filtered_coverage.data.has_hit_counts()
+        instructions = [
+            urwid.Text("Filter blocks by exact hit count:"),
+            urwid.Text("Enter a number to show only blocks with that hit count"),
+            urwid.Text("Leave empty to show all blocks"),
+        ]
+        
+        if has_hit_counts:
+            instructions.append(urwid.Text("Note: This file contains actual hit count data"))
+        else:
+            instructions.append(urwid.Text("Note: This file shows default hit counts (=1)"))
+        
         pile = urwid.Pile(
-            [
-                urwid.Text("Filter blocks by exact hit count:"),
-                urwid.Text("Enter a number to show only blocks with that hit count"),
-                urwid.Text("Leave empty to show all blocks"),
-                urwid.Text("Note: DrCov blocks always have hit count = 1"),
+            instructions + [
                 urwid.Divider(),
                 edit,
                 urwid.Divider(),
