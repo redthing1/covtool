@@ -151,27 +151,42 @@ class CoverageData:
                 stats[bb.module_id] += 1
         return stats
 
-    def validate(self) -> None:
+    def validate(self, permissive: bool = False) -> None:
         """
         Validates the integrity of the coverage data.
-        Raises DrCovError on failure.
+        Raises DrCovError on failure unless permissive=True.
+        In permissive mode, invalid blocks are filtered out and warnings are printed.
         """
         module_ids = {m.id for m in self.modules}
         if len(module_ids) != len(self.modules):
-            raise DrCovError("Duplicate module IDs found in module table.")
+            if permissive:
+                print("Warning: Duplicate module IDs found in module table.")
+            else:
+                raise DrCovError("Duplicate module IDs found in module table.")
 
         for i, module in enumerate(self.modules):
             if module.id != i:
                 # This is a strong assumption from the reference C++ implementation.
                 # It simplifies lookups but might be too strict for some drcov files.
                 # For compatibility with the reference lib, we'll enforce it.
-                pass  # print(f"Warning: Non-sequential module ID {module.id} at index {i}")
+                if permissive:
+                    print(f"Warning: Non-sequential module ID {module.id} at index {i}")
 
+        # Filter out invalid basic blocks in permissive mode
+        invalid_blocks = []
         for bb in self.basic_blocks:
             if bb.module_id not in module_ids:
-                raise DrCovError(
-                    f"Basic block references invalid module ID: {bb.module_id}"
-                )
+                if permissive:
+                    invalid_blocks.append(bb)
+                else:
+                    raise DrCovError(
+                        f"Basic block references invalid module ID: {bb.module_id}"
+                    )
+        
+        if permissive and invalid_blocks:
+            print(f"Warning: Filtering out {len(invalid_blocks)} basic blocks with invalid module IDs")
+            valid_blocks = [bb for bb in self.basic_blocks if bb.module_id in module_ids]
+            self.basic_blocks = valid_blocks
 
 
 class CoverageBuilder:
@@ -237,7 +252,7 @@ class CoverageBuilder:
 
 class _Parser:
     @staticmethod
-    def parse_stream(stream: TextIO) -> CoverageData:
+    def parse_stream(stream: TextIO, permissive: bool = False) -> CoverageData:
         header = _Parser._parse_header(stream)
         if header.version != _SUPPORTED_FILE_VERSION:
             raise DrCovError(
@@ -275,7 +290,7 @@ class _Parser:
                     basic_blocks.append(BasicBlock(start, size, mod_id))
 
         data = CoverageData(header, modules, basic_blocks, module_version)
-        data.validate()
+        data.validate(permissive=permissive)
         return data
 
     @staticmethod
@@ -376,7 +391,7 @@ class _Parser:
         return modules, version
 
     @staticmethod
-    def parse_text_only(stream: TextIO) -> CoverageData:
+    def parse_text_only(stream: TextIO, permissive: bool = False) -> CoverageData:
         """Parse a drcov file that has no BB table."""
         header = _Parser._parse_header(stream)
         if header.version != _SUPPORTED_FILE_VERSION:
@@ -388,11 +403,11 @@ class _Parser:
         basic_blocks = []  # No BB table
 
         data = CoverageData(header, modules, basic_blocks, module_version)
-        data.validate()
+        data.validate(permissive=permissive)
         return data
 
     @staticmethod
-    def parse_with_binary(text_stream: TextIO, bb_stream: BinaryIO) -> CoverageData:
+    def parse_with_binary(text_stream: TextIO, bb_stream: BinaryIO, permissive: bool = False) -> CoverageData:
         """Parse a drcov file by splitting text and binary parts."""
         header = _Parser._parse_header(text_stream)
         if header.version != _SUPPORTED_FILE_VERSION:
@@ -432,7 +447,7 @@ class _Parser:
                     basic_blocks.append(BasicBlock(start, size, mod_id))
 
         data = CoverageData(header, modules, basic_blocks, module_version)
-        data.validate()
+        data.validate(permissive=permissive)
         return data
 
 
@@ -557,12 +572,13 @@ class _Writer:
 T = TypeVar("T")
 
 
-def read(filepath_or_stream: Union[str, TextIO]) -> CoverageData:
+def read(filepath_or_stream: Union[str, TextIO], permissive: bool = False) -> CoverageData:
     """
     Reads and parses a DrCov file from a path or a text stream.
 
     Args:
         filepath_or_stream: Path to the .drcov file or a stream opened in text mode.
+        permissive: If True, warnings are printed for invalid data but parsing continues.
 
     Returns:
         A CoverageData object.
@@ -582,7 +598,7 @@ def read(filepath_or_stream: Union[str, TextIO]) -> CoverageData:
             # No BB table, parse as text only
             text_data = binary_data.decode("utf-8", errors="ignore")
             from io import StringIO
-            return _Parser.parse_text_only(StringIO(text_data))
+            return _Parser.parse_text_only(StringIO(text_data), permissive=permissive)
         else:
             # Split at BB table
             text_part = binary_data[:bb_table_start].decode("utf-8", errors="ignore")
@@ -592,9 +608,9 @@ def read(filepath_or_stream: Union[str, TextIO]) -> CoverageData:
             text_stream = StringIO(text_part)
             bb_stream = BytesIO(bb_part)
             
-            return _Parser.parse_with_binary(text_stream, bb_stream)
+            return _Parser.parse_with_binary(text_stream, bb_stream, permissive=permissive)
     else:
-        return _Parser.parse_stream(filepath_or_stream)
+        return _Parser.parse_stream(filepath_or_stream, permissive=permissive)
 
 
 def write(data: CoverageData, filepath_or_stream: Union[str, BinaryIO]):

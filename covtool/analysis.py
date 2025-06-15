@@ -49,7 +49,7 @@ def print_coverage_stats(coverage: CoverageSet, name: str = ""):
 
 
 def _generate_coverage_data(
-    coverage: CoverageSet, filename: str, module_filter: str = None
+    coverage: CoverageSet, filename: str, module_filter: str = None, top_blocks: int = 5
 ) -> Dict[str, Any]:
     """generate comprehensive coverage data structure"""
     data = {
@@ -144,26 +144,25 @@ def _generate_coverage_data(
 
             data["modules"].append(module_data)
 
-            # sample blocks for top 5 modules
-            if len(data["sample_blocks"]) < 5:
-                sample_blocks = sorted(blocks, key=lambda b: b.start)[:3]
-                data["sample_blocks"][module_name] = []
-                for block in sample_blocks:
-                    abs_addr = module_obj.base + block.start if module_obj else None
-                    block_data = {"offset": f"0x{block.start:08x}", "size": block.size}
-                    if abs_addr:
-                        block_data["absolute_address"] = f"0x{abs_addr:x}"
-                    data["sample_blocks"][module_name].append(block_data)
+            # top k blocks by size for every module
+            top_blocks_by_size = sorted(blocks, key=lambda b: b.size, reverse=True)[:top_blocks]
+            data["sample_blocks"][module_name] = []
+            for block in top_blocks_by_size:
+                abs_addr = module_obj.base + block.start if module_obj else None
+                block_data = {"offset": f"0x{block.start:08x}", "size": block.size}
+                if abs_addr:
+                    block_data["absolute_address"] = f"0x{abs_addr:x}"
+                data["sample_blocks"][module_name].append(block_data)
 
     return data
 
 
 def print_detailed_info_rich(
-    coverage: CoverageSet, filename: str, module_filter: str = None
+    coverage: CoverageSet, filename: str, module_filter: str = None, top_blocks: int = 5
 ):
     """display comprehensive information about a coverage trace using Rich"""
     console = Console()
-    data = _generate_coverage_data(coverage, filename, module_filter)
+    data = _generate_coverage_data(coverage, filename, module_filter, top_blocks)
 
     # header with title
     filter_text = f" (filtered to: {module_filter})" if module_filter else ""
@@ -262,29 +261,30 @@ def print_detailed_info_rich(
         console.print(size_table)
         console.print()
 
-    # sample blocks
+    # top blocks by size for each module
     if data["sample_blocks"]:
-        console.print("[bold]Sample Blocks by Module[/bold]")
+        console.print(f"[bold]Top {top_blocks} Blocks by Size per Module[/bold]")
         console.print()
 
-        for module_name, blocks in list(data["sample_blocks"].items())[:3]:
-            tree = Tree(f"[cyan]{module_name}[/cyan]")
-            for block in blocks:
-                addr_info = (
-                    f" → {block['absolute_address']}"
-                    if "absolute_address" in block
-                    else ""
-                )
-                tree.add(f"{block['offset']} ({block['size']}b){addr_info}")
-            console.print(tree)
+        for module_name, blocks in data["sample_blocks"].items():
+            if blocks:  # Only show modules that have blocks
+                tree = Tree(f"[cyan]{module_name}[/cyan]")
+                for block in blocks:
+                    addr_info = (
+                        f" → {block['absolute_address']}"
+                        if "absolute_address" in block
+                        else ""
+                    )
+                    tree.add(f"{block['offset']} ({block['size']}b){addr_info}")
+                console.print(tree)
         console.print()
 
 
 def print_detailed_info_json(
-    coverage: CoverageSet, filename: str, module_filter: str = None
+    coverage: CoverageSet, filename: str, module_filter: str = None, top_blocks: int = 5
 ):
     """output comprehensive coverage information as JSON"""
-    data = _generate_coverage_data(coverage, filename, module_filter)
+    data = _generate_coverage_data(coverage, filename, module_filter, top_blocks)
     print(json.dumps(data, indent=2))
 
 

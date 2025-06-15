@@ -20,11 +20,11 @@ class CoverageSet:
         self._blocks_set = set(coverage_data.basic_blocks)
 
     @classmethod
-    def from_file(cls, filepath: str) -> "CoverageSet":
+    def from_file(cls, filepath: str, permissive: bool = False) -> "CoverageSet":
         """create coverage set from file"""
         from .drcov import read
 
-        return cls(read(filepath))
+        return cls(read(filepath, permissive=permissive))
 
     def __len__(self) -> int:
         return len(self.data.basic_blocks)

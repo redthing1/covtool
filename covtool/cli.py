@@ -220,17 +220,20 @@ def info(
     json_output: bool = typer.Option(
         False, "--json", help="output information as JSON"
     ),
+    top_blocks: int = typer.Option(
+        5, "--top-blocks", "-k", help="number of top blocks to show per module"
+    ),
 ):
     """display detailed information about a coverage trace"""
     try:
-        coverage = CoverageSet.from_file(str(file))
+        coverage = CoverageSet.from_file(str(file), permissive=True)
         if module:
             coverage = coverage.filter_by_module(module)
 
         if json_output:
-            print_detailed_info_json(coverage, file.name, module)
+            print_detailed_info_json(coverage, file.name, module, top_blocks)
         else:
-            print_detailed_info_rich(coverage, file.name, module)
+            print_detailed_info_rich(coverage, file.name, module, top_blocks)
     except Exception as e:
         typer.echo(f"error analyzing {file}: {e}", err=True)
         raise typer.Exit(1)
@@ -245,7 +248,7 @@ def inspect(
 ):
     """launch interactive tui inspector for coverage trace"""
     try:
-        coverage = CoverageSet.from_file(str(file))
+        coverage = CoverageSet.from_file(str(file), permissive=True)
         if module:
             coverage = coverage.filter_by_module(module)
             filename = f"{file.name} (filtered: {module})"
