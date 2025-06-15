@@ -306,6 +306,37 @@ def compare(
             typer.echo(f"error loading {target_path}: {e}", err=True)
 
 
+@app.command()
+def lift(
+    input_file: Path = typer.Argument(
+        ..., help="input file with simple coverage format"
+    ),
+    output: Path = typer.Option(..., "--output", "-o", help="output drcov file"),
+    modules: List[str] = typer.Option(
+        [], "--module", "-M", help="module definitions (name@base_addr)"
+    ),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="verbose output"),
+):
+    """lift simple coverage formats to drcov format"""
+    if not modules:
+        typer.echo("error: at least one module must be specified with -M", err=True)
+        raise typer.Exit(1)
+
+    try:
+        from .lift import lift_coverage_file
+
+        result_coverage = lift_coverage_file(str(input_file), modules, verbose)
+        result_coverage.write_to_file(str(output))
+        typer.echo(f"wrote {len(result_coverage)} blocks to {output}")
+    except Exception as e:
+        typer.echo(f"error lifting coverage file: {e}", err=True)
+        if verbose:
+            import traceback
+
+            traceback.print_exc()
+        raise typer.Exit(1)
+
+
 def main():
     """entry point for poetry script"""
     app()
