@@ -35,6 +35,10 @@ class CoverageInspector:
         self.module_list = []
         self.block_list = []
         self.scroll_offset = 0
+        
+        # Block view sorting and filtering
+        self.block_sort_mode = "address"  # "address" or "hits"
+        self.hitcount_filter = None  # exact hit count filter (None = show all)
 
         # UI components
         self.main_loop = None
@@ -56,7 +60,7 @@ class CoverageInspector:
 
         total_blocks = len(self.filtered_coverage.data.basic_blocks)
         for module_name, blocks in sorted(
-            by_module.items(), key=lambda x: len(x[1]), reverse=True
+            by_module.items(), key=lambda x: x[0]  # sort by module name
         ):
             block_count = len(blocks)
             total_size = sum(block.size for block in blocks)
@@ -76,24 +80,39 @@ class CoverageInspector:
         """Refresh the block list for current filtered coverage"""
         self.block_list = []
 
-        for block in sorted(
-            self.filtered_coverage.data.basic_blocks,
-            key=lambda b: (b.module_id, b.start),
-        ):
+        # Create block list with hit information
+        blocks = self.filtered_coverage.data.basic_blocks
+        
+        for block in blocks:
             module = self.filtered_coverage.data.find_module(block.module_id)
             module_name = (
                 os.path.basename(module.path) if module else f"module_{block.module_id}"
             )
             abs_addr = module.base + block.start if module else None
-
-            self.block_list.append(
-                {
-                    "block": block,
-                    "module": module,
-                    "module_name": module_name,
-                    "abs_addr": abs_addr,
-                }
-            )
+            
+            # For DrCov format, each block has a hit count of 1 (executed)
+            # In the future, this could be extended to support actual hit counts
+            hits = 1
+            
+            # Apply hitcount filter (exact match)
+            if self.hitcount_filter is None or hits == self.hitcount_filter:
+                self.block_list.append(
+                    {
+                        "block": block,
+                        "module": module,
+                        "module_name": module_name,
+                        "abs_addr": abs_addr,
+                        "hits": hits,
+                    }
+                )
+        
+        # Sort based on current sort mode
+        if self.block_sort_mode == "hits":
+            # Sort by hits (descending), then by address
+            self.block_list.sort(key=lambda b: (-b["hits"], b["block"].module_id, b["block"].start))
+        else:
+            # Sort by address (module_id, then start offset)
+            self.block_list.sort(key=lambda b: (b["block"].module_id, b["block"].start))
 
     def _apply_filter(self, filter_text: str):
         """Apply module filter"""
@@ -165,16 +184,17 @@ class CoverageInspector:
         # Create block list items
         items = []
 
-        # Header
+        # Header with hits column and sort indicator
+        sort_indicator = " ↓" if self.block_sort_mode == "hits" else ""
         header_text = (
-            f"{'Offset':<12} {'Size':<6} {'Module':<25} {'Absolute Address':<16}"
+            f"{'Offset':<12} {'Size':<6} {'Hits':<6}{sort_indicator} {'Module':<22} {'Absolute Address':<16}"
         )
         header = urwid.AttrMap(urwid.Text(header_text), "header")
         items.append(header)
         items.append(urwid.Divider("═"))
 
         # Block entries (show more blocks, with pagination)
-        max_blocks = min(500, len(self.block_list))  # Show up to 500 blocks
+        max_blocks = min(10000, len(self.block_list))  # Show up to 10,000 blocks
         for block_info in self.block_list[:max_blocks]:
             block = block_info["block"]
             abs_addr_str = (
@@ -186,7 +206,7 @@ class CoverageInspector:
                 mod_name = mod_name[:20] + "..."
 
             line_text = (
-                f"0x{block.start:08x} {block.size:<6} {mod_name:<25} {abs_addr_str}"
+                f"0x{block.start:08x} {block.size:<6} {block_info['hits']:<6} {mod_name:<22} {abs_addr_str}"
             )
             item = SelectableText(line_text)
             item = urwid.AttrMap(item, None, focus_map="focus")
@@ -328,14 +348,7 @@ class CoverageInspector:
                 module_count = len(self.module_list)
                 view_help += f" ({module_count} modules)"
         elif self.current_view == "blocks":
-            view_help = " [↑↓]Scroll"
-            if self.block_list:
-                block_count = len(self.block_list)
-                displayed = min(500, block_count)
-                if block_count > 500:
-                    view_help += f" (showing {displayed:,} of {block_count:,} blocks)"
-                else:
-                    view_help += f" ({block_count:,} blocks)"
+            view_help = " [↑↓]Scroll [s]Sort [c]Filter hits"
         else:
             view_help = " [↑↓]Scroll"
 
@@ -368,13 +381,38 @@ class CoverageInspector:
         else:
             stats = f"Modules: {len(self.module_list)} | Blocks: {filtered_blocks:,}"
 
-        # Create two-line header
-        header_content = urwid.Pile(
-            [
-                urwid.AttrMap(urwid.Text(title), "header_title"),
-                urwid.AttrMap(urwid.Text(stats, align="center"), "header_stats"),
-            ]
-        )
+        # Add view-specific status for blocks view
+        view_status = ""
+        if self.current_view == "blocks" and self.block_list:
+            block_count = len(self.block_list)
+            displayed = min(10000, block_count)
+            
+            status_parts = []
+            if block_count > 10000:
+                status_parts.append(f"Showing {displayed:,} of {block_count:,}")
+            else:
+                status_parts.append(f"{block_count:,} blocks")
+            
+            if self.block_sort_mode == "hits":
+                status_parts.append("sorted by hits")
+            else:
+                status_parts.append("sorted by address")
+            
+            if self.hitcount_filter is not None:
+                status_parts.append(f"hits={self.hitcount_filter}")
+            
+            view_status = " | ".join(status_parts)
+
+        # Create multi-line header
+        header_lines = [
+            urwid.AttrMap(urwid.Text(title), "header_title"),
+            urwid.AttrMap(urwid.Text(stats, align="center"), "header_stats"),
+        ]
+        
+        if view_status:
+            header_lines.append(urwid.AttrMap(urwid.Text(view_status, align="center"), "header_stats"))
+
+        header_content = urwid.Pile(header_lines)
 
         return header_content
 
@@ -400,6 +438,10 @@ class CoverageInspector:
             self._apply_filter("")
         elif key == "f":
             self._show_filter_dialog()
+        elif key == "s" and self.current_view == "blocks":
+            self._toggle_block_sort()
+        elif key == "c" and self.current_view == "blocks":
+            self._show_hitcount_filter_dialog()
         elif key in ("h", "?"):
             self._show_help_dialog()
         elif key == "ctrl l":
@@ -493,8 +535,12 @@ class CoverageInspector:
             "  Enter       - Select module (in modules view)",
             "",
             "Filtering:",
-            "  f           - Open filter dialog",
-            "  r           - Reset/clear current filter",
+            "  f           - Open module filter dialog",
+            "  r           - Reset/clear module filter",
+            "",
+            "Block View Controls:",
+            "  s           - Toggle sort by hits/address",
+            "  c           - Filter by exact hit count",
             "",
             "Other:",
             "  Ctrl+L      - Refresh screen",
@@ -502,9 +548,9 @@ class CoverageInspector:
             "  q, Ctrl+C   - Quit",
             "",
             "Tips:",
-            "  • Use filters to narrow down large module lists",
+            "  • Use filters to narrow down large lists",
             "  • Module view shows coverage by module",
-            "  • Block view shows individual basic blocks",
+            "  • Block view shows individual basic blocks with hit counts",
             "  • Stats view provides summary information",
         ]
 
@@ -521,6 +567,82 @@ class CoverageInspector:
             width=50,
             valign="middle",
             height=16,
+        )
+        self.main_loop.widget = overlay
+
+    def _toggle_block_sort(self):
+        """Toggle between sorting blocks by address and hits"""
+        if self.block_sort_mode == "address":
+            self.block_sort_mode = "hits"
+        else:
+            self.block_sort_mode = "address"
+        
+        self._refresh_block_list()
+        self._update_view()
+        self._update_header_footer()
+
+    def _show_hitcount_filter_dialog(self):
+        """Show dialog to filter blocks by exact hit count"""
+
+        def on_ok(_button):
+            filter_text = edit.get_edit_text().strip()
+            if filter_text == "":
+                self.hitcount_filter = None
+            else:
+                try:
+                    self.hitcount_filter = int(filter_text)
+                except ValueError:
+                    # Invalid input, ignore
+                    pass
+            self._refresh_block_list()
+            self._update_view()
+            self._update_header_footer()
+            self.main_loop.widget = self.main_widget
+
+        def on_cancel(_button):
+            self.main_loop.widget = self.main_widget
+
+        def on_clear(_button):
+            edit.set_edit_text("")
+
+        current_filter = str(self.hitcount_filter) if self.hitcount_filter is not None else ""
+        edit = urwid.Edit("Hit count: ", current_filter)
+        ok_button = urwid.Button("Apply", on_ok)
+        clear_button = urwid.Button("Clear", on_clear)
+        cancel_button = urwid.Button("Cancel", on_cancel)
+
+        # Enhanced dialog with instructions
+        pile = urwid.Pile(
+            [
+                urwid.Text("Filter blocks by exact hit count:"),
+                urwid.Text("Enter a number to show only blocks with that hit count"),
+                urwid.Text("Leave empty to show all blocks"),
+                urwid.Text("Note: DrCov blocks always have hit count = 1"),
+                urwid.Divider(),
+                edit,
+                urwid.Divider(),
+                urwid.Columns(
+                    [
+                        ("pack", ok_button),
+                        ("pack", urwid.Text("  ")),
+                        ("pack", clear_button),
+                        ("pack", urwid.Text("  ")),
+                        ("pack", cancel_button),
+                    ]
+                ),
+            ]
+        )
+
+        dialog = urwid.Filler(
+            urwid.LineBox(pile, title="Filter by Hit Count"), valign="middle"
+        )
+        overlay = urwid.Overlay(
+            dialog,
+            self.main_widget,
+            align="center",
+            width=65,
+            valign="middle",
+            height=14,
         )
         self.main_loop.widget = overlay
 
