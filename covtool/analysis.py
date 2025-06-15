@@ -183,20 +183,23 @@ def _generate_coverage_data(
 
             data["modules"].append(module_data)
 
-            # top k blocks by size for every module
-            top_blocks_by_size = sorted(blocks, key=lambda b: b.size, reverse=True)[
-                :top_blocks
-            ]
-            data["sample_blocks"][module_name] = []
-            for block in top_blocks_by_size:
-                abs_addr = module_obj.base + block.start if module_obj else None
-                block_data = {"offset": f"0x{block.start:08x}", "size": block.size}
-                if abs_addr:
-                    block_data["absolute_address"] = f"0x{abs_addr:x}"
-                # Add hit count information
-                block_index = coverage.data.basic_blocks.index(block)
-                block_data["hits"] = coverage.data.get_hit_count(block_index)
-                data["sample_blocks"][module_name].append(block_data)
+            # top k blocks by hits for specific module filter only
+            if module_filter and module_filter.lower() in module_name.lower():
+                # Sort by hits, then by size for tie-breaking
+                blocks_with_hits = []
+                for block in blocks:
+                    block_index = coverage.data.basic_blocks.index(block)
+                    hits = coverage.data.get_hit_count(block_index)
+                    blocks_with_hits.append((block, hits))
+                
+                top_blocks_by_hits = sorted(blocks_with_hits, key=lambda x: (-x[1], -x[0].size))[:top_blocks]
+                data["sample_blocks"][module_name] = []
+                for block, hits in top_blocks_by_hits:
+                    abs_addr = module_obj.base + block.start if module_obj else None
+                    block_data = {"offset": f"0x{block.start:08x}", "size": block.size, "hits": hits}
+                    if abs_addr:
+                        block_data["absolute_address"] = f"0x{abs_addr:x}"
+                    data["sample_blocks"][module_name].append(block_data)
 
     return data
 
@@ -369,9 +372,9 @@ def print_detailed_info_rich(
         console.print(size_table)
         console.print()
 
-    # top blocks by size for each module
-    if data["sample_blocks"]:
-        console.print(f"[bold]Top {top_blocks} Blocks by Size per Module[/bold]")
+    # top blocks by hits for filtered module
+    if data["sample_blocks"] and module_filter:
+        console.print(f"[bold]Top {top_blocks} Blocks by Hit Count (Filtered Module)[/bold]")
         console.print()
 
         for module_name, blocks in data["sample_blocks"].items():
