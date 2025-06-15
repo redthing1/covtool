@@ -230,9 +230,9 @@ class CoverageInspector:
         
         if self.filtered_coverage.data.has_hit_counts():
             hits_str = self._format_hit_count(mod_info['hits'])
-            return f"{mod_name:<{self.MODULE_WIDTH_WITH_HITS}} {mod_info['count']:<8,} {size_str:<10} {mod_info['percentage']:<7.1f}% {hits_str:<10}"
+            return f"{mod_name:<{self.MODULE_WIDTH_WITH_HITS}} {mod_info['count']:<8,} {size_str:<10} {mod_info['percentage']:>7.1f}% {hits_str:<10}"
         else:
-            return f"{mod_name:<{self.MODULE_WIDTH_NO_HITS}} {mod_info['count']:<10,} {size_str:<12} {mod_info['percentage']:<7.1f}%"
+            return f"{mod_name:<{self.MODULE_WIDTH_NO_HITS}} {mod_info['count']:<10,} {size_str:<12} {mod_info['percentage']:>7.1f}%"
 
     def _create_blocks_view(self):
         """Create the blocks view with scrolling"""
