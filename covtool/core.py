@@ -40,17 +40,7 @@ class CoverageSet:
         # combine basic blocks
         all_blocks = list(self._blocks_set | other._blocks_set)
 
-        # create new coverage data
-        from .drcov import CoverageData, FileHeader, ModuleTableVersion
-
-        new_data = CoverageData(
-            header=FileHeader(flavor="covtool_union"),
-            modules=list(all_modules.values()),
-            basic_blocks=all_blocks,
-            module_version=ModuleTableVersion.V2,
-        )
-
-        return CoverageSet(new_data)
+        return self._create_coverage_set(all_modules, all_blocks, "covtool_union")
 
     def __and__(self, other: "CoverageSet") -> "CoverageSet":
         """intersection operation: self & other"""
@@ -60,34 +50,14 @@ class CoverageSet:
         # intersect basic blocks
         intersected_blocks = list(self._blocks_set & other._blocks_set)
 
-        # create new coverage data
-        from .drcov import CoverageData, FileHeader, ModuleTableVersion
-
-        new_data = CoverageData(
-            header=FileHeader(flavor="covtool_intersect"),
-            modules=list(all_modules.values()),
-            basic_blocks=intersected_blocks,
-            module_version=ModuleTableVersion.V2,
-        )
-
-        return CoverageSet(new_data)
+        return self._create_coverage_set(all_modules, intersected_blocks, "covtool_intersect")
 
     def __sub__(self, other: "CoverageSet") -> "CoverageSet":
         """difference operation: self - other"""
         # subtract basic blocks
         diff_blocks = list(self._blocks_set - other._blocks_set)
 
-        # create new coverage data with only our modules
-        from .drcov import CoverageData, FileHeader, ModuleTableVersion
-
-        new_data = CoverageData(
-            header=FileHeader(flavor="covtool_diff"),
-            modules=list(self._module_map.values()),
-            basic_blocks=diff_blocks,
-            module_version=ModuleTableVersion.V2,
-        )
-
-        return CoverageSet(new_data)
+        return self._create_coverage_set(self._module_map, diff_blocks, "covtool_diff")
 
     def __xor__(self, other: "CoverageSet") -> "CoverageSet":
         """symmetric difference: self ^ other"""
@@ -97,17 +67,7 @@ class CoverageSet:
         # symmetric difference of basic blocks
         symdiff_blocks = list(self._blocks_set ^ other._blocks_set)
 
-        # create new coverage data
-        from .drcov import CoverageData, FileHeader, ModuleTableVersion
-
-        new_data = CoverageData(
-            header=FileHeader(flavor="covtool_symdiff"),
-            modules=list(all_modules.values()),
-            basic_blocks=symdiff_blocks,
-            module_version=ModuleTableVersion.V2,
-        )
-
-        return CoverageSet(new_data)
+        return self._create_coverage_set(all_modules, symdiff_blocks, "covtool_symdiff")
 
     def get_absolute_addresses(self) -> Set[int]:
         """convert all blocks to absolute memory addresses"""
@@ -206,3 +166,16 @@ class CoverageSet:
     def blocks(self) -> Set[BasicBlock]:
         """access to blocks set"""
         return self._blocks_set
+    
+    def _create_coverage_set(self, modules, blocks, flavor):
+        """Helper to create new CoverageSet with given components"""
+        from .drcov import CoverageData, FileHeader, ModuleTableVersion
+        
+        new_data = CoverageData(
+            header=FileHeader(flavor=flavor),
+            modules=list(modules.values()) if isinstance(modules, dict) else modules,
+            basic_blocks=blocks,
+            module_version=ModuleTableVersion.V2,
+            hit_counts=None,  # Set operations don't preserve hit counts
+        )
+        return CoverageSet(new_data)

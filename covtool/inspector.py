@@ -23,7 +23,24 @@ class SelectableText(urwid.Text):
 
 class CoverageInspector:
     """TUI inspector for coverage traces using urwid"""
-
+    
+    # Layout constants
+    MODULE_WIDTH_WITH_HITS = 45
+    MODULE_WIDTH_NO_HITS = 50
+    BLOCK_MODULE_WIDTH = 35
+    MAX_BLOCKS_DISPLAY = 10000
+    
+    # Size formatting thresholds
+    SIZE_MB_THRESHOLD = 1024 * 1024
+    SIZE_KB_THRESHOLD = 1024
+    HIT_COUNT_K_THRESHOLD = 1000
+    HIT_COUNT_FORMAT_THRESHOLD = 10000
+    
+    # Dialog dimensions
+    DIALOG_WIDTH = 65
+    HELP_DIALOG_HEIGHT = 16
+    FILTER_DIALOG_HEIGHT = 12
+    
     def __init__(self, coverage: CoverageSet, filename: str):
         self.coverage = coverage
         self.filename = filename
@@ -47,6 +64,38 @@ class CoverageInspector:
         self.module_listbox = None
 
         self._setup_data()
+
+    def _format_size(self, size):
+        """Format size with appropriate units"""
+        if size >= self.SIZE_MB_THRESHOLD:
+            return f"{size / self.SIZE_MB_THRESHOLD:.1f}MB"
+        elif size >= self.SIZE_KB_THRESHOLD:
+            return f"{size / self.SIZE_KB_THRESHOLD:.1f}KB"
+        else:
+            return f"{size}B"
+    
+    def _format_hit_count(self, hits):
+        """Format hit count with K suffix for large numbers"""
+        if hits >= self.HIT_COUNT_FORMAT_THRESHOLD:
+            return f"{hits/1000:.1f}K"
+        elif hits >= self.HIT_COUNT_K_THRESHOLD:
+            return f"{hits:,}"
+        else:
+            return str(hits)
+    
+    def _truncate_module_name(self, name, has_hits=None):
+        """Truncate module name based on current layout"""
+        if has_hits is None:
+            has_hits = self.filtered_coverage.data.has_hit_counts()
+        
+        if has_hits:
+            max_len = self.MODULE_WIDTH_WITH_HITS
+            truncate_len = max_len - 3  # account for "..."
+        else:
+            max_len = self.MODULE_WIDTH_NO_HITS
+            truncate_len = max_len - 3
+        
+        return name[:truncate_len] + "..." if len(name) > max_len else name
 
     def _setup_data(self):
         """Prepare data for display"""
@@ -142,61 +191,48 @@ class CoverageInspector:
                 urwid.Text("No modules found", align="center"), valign="middle"
             )
 
-        # Create module list items
         items = []
-
-        # Header - include hit count column if available
-        if self.filtered_coverage.data.has_hit_counts():
-            header_text = f"{'Module':<45} {'Blocks':<8} {'Size':<10} {'%':<8} {'Hits':<10}"
-        else:
-            header_text = f"{'Module':<50} {'Blocks':<10} {'Size':<12} {'%':<8}"
-        header = urwid.AttrMap(urwid.Text(header_text), "header")
-        items.append(header)
-        items.append(urwid.Divider("═"))
-
-        # Module entries
-        for i, mod_info in enumerate(self.module_list):
-            mod_name = mod_info["name"]
-            
-            # Format size with units
-            size = mod_info["size"]
-            if size >= 1024 * 1024:
-                size_str = f"{size / (1024 * 1024):.1f}MB"
-            elif size >= 1024:
-                size_str = f"{size / 1024:.1f}KB"
-            else:
-                size_str = f"{size}B"
-
-            if self.filtered_coverage.data.has_hit_counts():
-                # Truncate module name to fit hit count column
-                if len(mod_name) > 43:
-                    mod_name = mod_name[:40] + "..."
-                    
-                # Format hit count numbers
-                hits_str = f"{mod_info['hits']:,}"
-                if len(hits_str) > 10:
-                    hits_str = f"{mod_info['hits']/1000:.1f}K"
-                
-                line_text = f"{mod_name:<45} {mod_info['count']:<8,} {size_str:<10} {mod_info['percentage']:<7.1f}% {hits_str:<10}"
-            else:
-                # Original layout for files without hit counts
-                if len(mod_name) > 48:
-                    mod_name = mod_name[:45] + "..."
-                line_text = f"{mod_name:<50} {mod_info['count']:<10,} {size_str:<12} {mod_info['percentage']:<7.1f}%"
-
-            # Create selectable text widget
-            item = SelectableText(line_text, index=i)
-            item = urwid.AttrMap(item, None, focus_map="selected")
-            items.append(item)
-
-        # Create listbox with proper focus handling
+        items.extend(self._create_module_header())
+        items.extend(self._create_module_entries())
+        
         self.module_listbox = urwid.ListBox(urwid.SimpleFocusListWalker(items))
-
+        
         # Set focus to first module (skip header and divider)
         if len(items) > 2:
             self.module_listbox.set_focus(2)
-
+        
         return self.module_listbox
+    
+    def _create_module_header(self):
+        """Create header for module view"""
+        if self.filtered_coverage.data.has_hit_counts():
+            header_text = f"{'Module':<{self.MODULE_WIDTH_WITH_HITS}} {'Blocks':<8} {'Size':<10} {'%':<8} {'Hits':<10}"
+        else:
+            header_text = f"{'Module':<{self.MODULE_WIDTH_NO_HITS}} {'Blocks':<10} {'Size':<12} {'%':<8}"
+        
+        header = urwid.AttrMap(urwid.Text(header_text), "header")
+        return [header, urwid.Divider("═")]
+    
+    def _create_module_entries(self):
+        """Create module entry rows"""
+        items = []
+        for i, mod_info in enumerate(self.module_list):
+            line_text = self._format_module_line(mod_info)
+            item = SelectableText(line_text, index=i)
+            item = urwid.AttrMap(item, None, focus_map="selected")
+            items.append(item)
+        return items
+    
+    def _format_module_line(self, mod_info):
+        """Format a single module line for display"""
+        mod_name = self._truncate_module_name(mod_info["name"])
+        size_str = self._format_size(mod_info["size"])
+        
+        if self.filtered_coverage.data.has_hit_counts():
+            hits_str = self._format_hit_count(mod_info['hits'])
+            return f"{mod_name:<{self.MODULE_WIDTH_WITH_HITS}} {mod_info['count']:<8,} {size_str:<10} {mod_info['percentage']:<7.1f}% {hits_str:<10}"
+        else:
+            return f"{mod_name:<{self.MODULE_WIDTH_NO_HITS}} {mod_info['count']:<10,} {size_str:<12} {mod_info['percentage']:<7.1f}%"
 
     def _create_blocks_view(self):
         """Create the blocks view with scrolling"""
@@ -214,14 +250,14 @@ class CoverageInspector:
         addr_col_header = f"Offset{sort_indicator}" if self.block_sort_mode == "address" else "Offset"
         
         header_text = (
-            f"{'Module':<35} {addr_col_header:<12} {'Address':<16} {'Size':<6} {hit_col_header:<8}"
+            f"{'Module':<{self.BLOCK_MODULE_WIDTH}} {addr_col_header:<12} {'Address':<16} {'Size':<6} {hit_col_header:<8}"
         )
         header = urwid.AttrMap(urwid.Text(header_text), "header")
         items.append(header)
         items.append(urwid.Divider("═"))
 
         # Block entries (show more blocks, with pagination)
-        max_blocks = min(10000, len(self.block_list))  # Show up to 10,000 blocks
+        max_blocks = min(self.MAX_BLOCKS_DISPLAY, len(self.block_list))
         for block_info in self.block_list[:max_blocks]:
             block = block_info["block"]
             abs_addr_str = (
@@ -230,21 +266,11 @@ class CoverageInspector:
 
             mod_name = block_info["module_name"]
 
-            # Format hit count without visual indicators
-            hits = block_info['hits']
-            if hits >= 10000:
-                hits_str = f"{hits/1000:.1f}K"
-            elif hits >= 1000:
-                hits_str = f"{hits:,}"
-            else:
-                hits_str = str(hits)
-                
-            # Adjust module name truncation for wider column
-            if len(mod_name) > 35:
-                mod_name = mod_name[:32] + "..."
+            hits_str = self._format_hit_count(block_info['hits'])
+            mod_name = self._truncate_module_name(mod_name, has_hits=False)  # blocks view doesn't depend on hit count presence
             
             line_text = (
-                f"{mod_name:<35} 0x{block.start:08x} {abs_addr_str:<16} {block.size:<6} {hits_str:<8}"
+                f"{mod_name:<{self.BLOCK_MODULE_WIDTH}} 0x{block.start:08x} {abs_addr_str:<16} {block.size:<6} {hits_str:<8}"
             )
             item = SelectableText(line_text)
             item = urwid.AttrMap(item, None, focus_map="focus")
@@ -266,71 +292,81 @@ class CoverageInspector:
 
     def _create_stats_view(self):
         """Create an enhanced stats view"""
-        cov = self.filtered_coverage
-
         stats_content = []
-
-        # Title with filter info
-        if self.current_filter:
-            title_text = f"Coverage Analysis (Filtered: {self.current_filter})"
-        else:
-            title_text = "Coverage Analysis (All Modules)"
-        stats_content.append(
-            urwid.AttrMap(urwid.Text(title_text, align="center"), "title")
+        
+        stats_content.extend(self._create_stats_title())
+        stats_content.extend(self._create_basic_stats())
+        stats_content.extend(self._create_address_space_stats())
+        stats_content.extend(self._create_hit_distribution_stats())
+        stats_content.extend(self._create_top_modules_stats())
+        
+        pile = urwid.Pile(stats_content)
+        return urwid.Filler(pile, valign="top")
+    
+    def _create_stats_title(self):
+        """Create stats view title section"""
+        title_text = (
+            f"Coverage Analysis (Filtered: {self.current_filter})" 
+            if self.current_filter 
+            else "Coverage Analysis (All Modules)"
         )
-        stats_content.append(urwid.Divider())
-
-        # Basic stats in columns
+        return [
+            urwid.AttrMap(urwid.Text(title_text, align="center"), "title"),
+            urwid.Divider()
+        ]
+    
+    def _create_basic_stats(self):
+        """Create basic statistics section"""
+        cov = self.filtered_coverage
         basic_stats = [
             f"Total basic blocks: {len(cov):,}",
             f"Total modules: {len(cov.modules):,}",
             f"Hit count support: {'Yes' if cov.data.has_hit_counts() else 'No (defaults to 1)'}",
         ]
-
+        
         if cov.data.basic_blocks:
-            total_size = sum(block.size for block in cov.data.basic_blocks)
-            avg_size = total_size / len(cov.data.basic_blocks)
-            min_size = min(block.size for block in cov.data.basic_blocks)
-            max_size = max(block.size for block in cov.data.basic_blocks)
-
-            # Format total size
-            if total_size > 1024 * 1024:
-                total_size_str = f"{total_size / (1024 * 1024):.2f} MB"
-            elif total_size > 1024:
-                total_size_str = f"{total_size / 1024:.2f} KB"
-            else:
-                total_size_str = f"{total_size} bytes"
-
-            basic_stats.extend(
-                [
-                    f"Total coverage size: {total_size_str}",
-                    f"Average block size: {avg_size:.1f} bytes",
-                    f"Block size range: {min_size} - {max_size} bytes",
-                ]
-            )
-            
-            # Add hit count statistics if available
+            basic_stats.extend(self._get_size_stats())
             if cov.data.has_hit_counts():
-                hit_counts = cov.data.hit_counts
-                total_hits = sum(hit_counts)
-                avg_hits = total_hits / len(hit_counts)
-                min_hits = min(hit_counts)
-                max_hits = max(hit_counts)
-                
-                basic_stats.extend(
-                    [
-                        f"Total hits: {total_hits:,}",
-                        f"Average hits per block: {avg_hits:.1f}",
-                        f"Hit count range: {min_hits} - {max_hits:,}",
-                    ]
-                )
+                basic_stats.extend(self._get_hit_count_stats())
+        
+        content = [urwid.Text(f"  {stat}") for stat in basic_stats]
+        content.append(urwid.Divider())
+        return content
+    
+    def _get_size_stats(self):
+        """Get size-related statistics"""
+        cov = self.filtered_coverage
+        total_size = sum(block.size for block in cov.data.basic_blocks)
+        avg_size = total_size / len(cov.data.basic_blocks)
+        min_size = min(block.size for block in cov.data.basic_blocks)
+        max_size = max(block.size for block in cov.data.basic_blocks)
+        
+        total_size_str = self._format_size(total_size).replace('B', ' bytes').replace('MB', ' MB').replace('KB', ' KB')
+        
+        return [
+            f"Total coverage size: {total_size_str}",
+            f"Average block size: {avg_size:.1f} bytes",
+            f"Block size range: {min_size} - {max_size} bytes",
+        ]
+    
+    def _get_hit_count_stats(self):
+        """Get hit count statistics"""
+        hit_counts = self.filtered_coverage.data.hit_counts
+        total_hits = sum(hit_counts)
+        avg_hits = total_hits / len(hit_counts)
+        min_hits = min(hit_counts)
+        max_hits = max(hit_counts)
+        
+        return [
+            f"Total hits: {total_hits:,}",
+            f"Average hits per block: {avg_hits:.1f}",
+            f"Hit count range: {min_hits} - {max_hits:,}",
+        ]
+    
+    def _create_address_space_stats(self):
+        """Create address space statistics section"""
+        cov = self.filtered_coverage
 
-        for stat in basic_stats:
-            stats_content.append(urwid.Text(f"  {stat}"))
-
-        stats_content.append(urwid.Divider())
-
-        # Address space info
         if cov.data.basic_blocks:
             addresses = cov.get_absolute_addresses()
             if addresses:
@@ -338,65 +374,62 @@ class CoverageInspector:
                 max_addr = max(addresses)
                 addr_range = max_addr - min_addr
 
-                stats_content.append(
-                    urwid.AttrMap(
-                        urwid.Text("Address Space", align="center"), "subtitle"
-                    )
-                )
-                stats_content.append(
-                    urwid.Text(f"  Range: 0x{min_addr:x} - 0x{max_addr:x}")
-                )
-                stats_content.append(
-                    urwid.Text(
-                        f"  Span: {addr_range:,} bytes ({addr_range / 1024 / 1024:.1f} MB)"
-                    )
-                )
-                stats_content.append(urwid.Divider())
+                return [
+                    urwid.AttrMap(urwid.Text("Address Space", align="center"), "subtitle"),
+                    urwid.Text(f"  Range: 0x{min_addr:x} - 0x{max_addr:x}"),
+                    urwid.Text(f"  Span: {addr_range:,} bytes ({addr_range / 1024 / 1024:.1f} MB)"),
+                    urwid.Divider()
+                ]
+        return []
         
-        # Hit count distribution if available
-        if cov.data.has_hit_counts():
-            hit_counts = cov.data.hit_counts
-            hit_ranges = {
-                "1 hit": sum(1 for h in hit_counts if h == 1),
-                "2-10 hits": sum(1 for h in hit_counts if 2 <= h <= 10),
-                "11-100 hits": sum(1 for h in hit_counts if 11 <= h <= 100),
-                "101-1000 hits": sum(1 for h in hit_counts if 101 <= h <= 1000),
-                "1000+ hits": sum(1 for h in hit_counts if h > 1000),
-            }
-            
-            stats_content.append(
-                urwid.AttrMap(
-                    urwid.Text("Hit Count Distribution", align="center"), "subtitle"
+    
+    def _create_hit_distribution_stats(self):
+        """Create hit count distribution section"""
+        cov = self.filtered_coverage
+        if not cov.data.has_hit_counts():
+            return []
+        
+        hit_counts = cov.data.hit_counts
+        hit_ranges = {
+            "1 hit": sum(1 for h in hit_counts if h == 1),
+            "2-10 hits": sum(1 for h in hit_counts if 2 <= h <= 10),
+            "11-100 hits": sum(1 for h in hit_counts if 11 <= h <= 100),
+            "101-1000 hits": sum(1 for h in hit_counts if 101 <= h <= 1000),
+            "1000+ hits": sum(1 for h in hit_counts if h > 1000),
+        }
+        
+        content = [
+            urwid.AttrMap(urwid.Text("Hit Count Distribution", align="center"), "subtitle")
+        ]
+        
+        total_blocks = len(hit_counts)
+        for range_name, count in hit_ranges.items():
+            if count > 0:
+                percentage = (count / total_blocks) * 100
+                content.append(
+                    urwid.Text(f"  {range_name}: {count:,} blocks ({percentage:.1f}%)")
                 )
+        
+        content.append(urwid.Divider())
+        return content
+    
+    def _create_top_modules_stats(self):
+        """Create top modules section"""
+        if not self.module_list:
+            return []
+        
+        content = [
+            urwid.AttrMap(urwid.Text("Top Modules by Coverage", align="center"), "subtitle")
+        ]
+        
+        for i, mod_info in enumerate(self.module_list[:5]):
+            mod_name = os.path.basename(mod_info["name"])
+            mod_name = self._truncate_module_name(mod_name, has_hits=False)
+            content.append(
+                urwid.Text(f"  {i+1}. {mod_name} ({mod_info['percentage']:.1f}%)")
             )
-            
-            total_blocks = len(hit_counts)
-            for range_name, count in hit_ranges.items():
-                if count > 0:
-                    percentage = (count / total_blocks) * 100
-                    stats_content.append(
-                        urwid.Text(f"  {range_name}: {count:,} blocks ({percentage:.1f}%)")
-                    )
-            
-            stats_content.append(urwid.Divider())
-
-        # Top modules summary
-        if self.module_list:
-            stats_content.append(
-                urwid.AttrMap(
-                    urwid.Text("Top Modules by Coverage", align="center"), "subtitle"
-                )
-            )
-            for i, mod_info in enumerate(self.module_list[:5]):
-                mod_name = os.path.basename(mod_info["name"])
-                if len(mod_name) > 30:
-                    mod_name = mod_name[:27] + "..."
-                stats_content.append(
-                    urwid.Text(f"  {i+1}. {mod_name} ({mod_info['percentage']:.1f}%)")
-                )
-
-        pile = urwid.Pile(stats_content)
-        return urwid.Filler(pile, valign="top")
+        
+        return content
 
     def _update_view(self):
         """Update the current view"""
@@ -647,9 +680,9 @@ class CoverageInspector:
             dialog,
             self.main_widget,
             align="center",
-            width=65,
+            width=self.DIALOG_WIDTH,
             valign="middle",
-            height=12,
+            height=self.FILTER_DIALOG_HEIGHT,
         )
         self.main_loop.widget = overlay
 
@@ -699,7 +732,7 @@ class CoverageInspector:
             align="center",
             width=50,
             valign="middle",
-            height=16,
+            height=self.HELP_DIALOG_HEIGHT,
         )
         self.main_loop.widget = overlay
 

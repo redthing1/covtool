@@ -20,6 +20,13 @@ from rich.align import Align
 from .core import CoverageSet
 from .drcov import BasicBlock
 
+# Constants
+DEFAULT_TOP_MODULES = 10
+DEFAULT_BAR_WIDTH = 20
+HIT_COUNT_BAR_WIDTH = 15
+BYTES_PER_MB = 1024 * 1024
+RARITY_SEPARATOR_LENGTH = 50
+
 
 def load_multiple_coverage(filepaths: List[Path]) -> List[CoverageSet]:
     """load multiple coverage files, handling errors gracefully"""
@@ -125,12 +132,12 @@ def _generate_coverage_data(
                 "min_address": f"0x{min_addr:x}",
                 "max_address": f"0x{max_addr:x}",
                 "range_bytes": addr_range,
-                "range_mb": round(addr_range / 1024 / 1024, 1),
+                "range_mb": round(addr_range / BYTES_PER_MB, 1),
             }
 
         # block size distribution
         size_counts = Counter(block_sizes)
-        for size, count in size_counts.most_common(10):
+        for size, count in size_counts.most_common(DEFAULT_TOP_MODULES):
             percentage = (count / len(coverage)) * 100
             data["block_size_distribution"].append(
                 {"size": size, "count": count, "percentage": round(percentage, 1)}
@@ -273,7 +280,7 @@ def print_detailed_info_rich(
             for range_name, count in hit_stats['distribution'].items():
                 if count > 0:  # Only show ranges with blocks
                     percentage = (count / total_blocks) * 100
-                    bar_width = int((count / max_count) * 15)
+                    bar_width = int((count / max_count) * HIT_COUNT_BAR_WIDTH)
                     bar = "█" * bar_width
                     
                     dist_table.add_row(
@@ -316,7 +323,7 @@ def print_detailed_info_rich(
         modules_table.add_column("Size", justify="right", style="blue")
         modules_table.add_column("Path", style="dim", max_width=50)
 
-        for mod in data["modules"][:10]:  # top 10 modules
+        for mod in data["modules"][:DEFAULT_TOP_MODULES]:  # top modules
             modules_table.add_row(
                 mod["name"],
                 f"{mod['block_count']:,}",
@@ -339,7 +346,7 @@ def print_detailed_info_rich(
         max_count = max(item["count"] for item in data["block_size_distribution"])
 
         for item in data["block_size_distribution"]:
-            bar_width = int((item["count"] / max_count) * 20)
+            bar_width = int((item["count"] / max_count) * DEFAULT_BAR_WIDTH)
             bar = "█" * bar_width
 
             size_table.add_row(
@@ -386,7 +393,7 @@ def print_rarity_analysis(coverage_sets: List[CoverageSet], threshold: int):
         return
 
     typer.echo(f"\nrarity analysis (threshold <= {threshold}):")
-    typer.echo("=" * 50)
+    typer.echo("=" * RARITY_SEPARATOR_LENGTH)
 
     # get rarity info for all blocks
     all_blocks = set()
