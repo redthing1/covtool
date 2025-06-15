@@ -50,7 +50,9 @@ class CoverageSet:
         # intersect basic blocks
         intersected_blocks = list(self._blocks_set & other._blocks_set)
 
-        return self._create_coverage_set(all_modules, intersected_blocks, "covtool_intersect")
+        return self._create_coverage_set(
+            all_modules, intersected_blocks, "covtool_intersect"
+        )
 
     def __sub__(self, other: "CoverageSet") -> "CoverageSet":
         """difference operation: self - other"""
@@ -99,17 +101,17 @@ class CoverageSet:
             return CoverageSet(empty_data)
 
         matching_ids = {m.id for m in matching_modules}
-        
+
         # Filter blocks and preserve corresponding hit counts
         filtered_blocks = []
         filtered_hit_counts = []
-        
+
         for i, block in enumerate(self.data.basic_blocks):
             if block.module_id in matching_ids:
                 filtered_blocks.append(block)
                 if self.data.has_hit_counts():
                     filtered_hit_counts.append(self.data.hit_counts[i])
-        
+
         # create new coverage data
         from .drcov import CoverageData, FileHeader, ModuleTableVersion
 
@@ -166,11 +168,11 @@ class CoverageSet:
     def blocks(self) -> Set[BasicBlock]:
         """access to blocks set"""
         return self._blocks_set
-    
+
     def _create_coverage_set(self, modules, blocks, flavor):
         """Helper to create new CoverageSet with given components"""
         from .drcov import CoverageData, FileHeader, ModuleTableVersion
-        
+
         new_data = CoverageData(
             header=FileHeader(flavor=flavor),
             modules=list(modules.values()) if isinstance(modules, dict) else modules,

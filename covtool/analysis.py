@@ -90,7 +90,7 @@ def _generate_coverage_data(
                 "max_block_size": max_size,
             }
         )
-        
+
         # hit count statistics
         if coverage.data.has_hit_counts():
             hit_counts = coverage.data.hit_counts
@@ -98,7 +98,7 @@ def _generate_coverage_data(
             avg_hits = total_hits / len(hit_counts)
             min_hits = min(hit_counts)
             max_hits = max(hit_counts)
-            
+
             # Hit count distribution
             hit_count_ranges = {
                 "1": sum(1 for h in hit_counts if h == 1),
@@ -107,7 +107,7 @@ def _generate_coverage_data(
                 "101-1000": sum(1 for h in hit_counts if 101 <= h <= 1000),
                 "1001+": sum(1 for h in hit_counts if h > 1000),
             }
-            
+
             data["hit_count_stats"] = {
                 "total_hits": total_hits,
                 "average_hits": round(avg_hits, 1),
@@ -184,7 +184,9 @@ def _generate_coverage_data(
             data["modules"].append(module_data)
 
             # top k blocks by size for every module
-            top_blocks_by_size = sorted(blocks, key=lambda b: b.size, reverse=True)[:top_blocks]
+            top_blocks_by_size = sorted(blocks, key=lambda b: b.size, reverse=True)[
+                :top_blocks
+            ]
             data["sample_blocks"][module_name] = []
             for block in top_blocks_by_size:
                 abs_addr = module_obj.base + block.start if module_obj else None
@@ -222,7 +224,10 @@ def print_detailed_info_rich(
     summary = data["summary"]
     summary_table.add_row("Total Basic Blocks", f"{summary['total_blocks']:,}")
     summary_table.add_row("Total Modules", f"{summary['total_modules']:,}")
-    summary_table.add_row("Hit Count Support", "Yes" if summary['has_hit_counts'] else "No (defaults to 1)")
+    summary_table.add_row(
+        "Hit Count Support",
+        "Yes" if summary["has_hit_counts"] else "No (defaults to 1)",
+    )
 
     if "total_coverage_size" in summary:
         summary_table.add_row(
@@ -238,7 +243,7 @@ def print_detailed_info_rich(
 
     console.print(summary_table)
     console.print()
-    
+
     # hit count statistics
     if data["hit_count_stats"]:
         hit_stats = data["hit_count_stats"]
@@ -257,41 +262,46 @@ def print_detailed_info_rich(
             )
             hit_table.add_column("Metric", style="bold")
             hit_table.add_column("Value", style="green")
-            
+
             hit_table.add_row("Total Hits", f"{hit_stats['total_hits']:,}")
             hit_table.add_row("Average Hits per Block", f"{hit_stats['average_hits']}")
             hit_table.add_row("Median Hits per Block", f"{hit_stats['median_hits']:,}")
-            hit_table.add_row("Hit Count Range", f"{hit_stats['min_hits']} - {hit_stats['max_hits']:,}")
-            
-            console.print(hit_table)
-            
-            # Hit count distribution
-            dist_table = Table(
-                title="[bold]Hit Count Distribution[/bold]"
+            hit_table.add_row(
+                "Hit Count Range",
+                f"{hit_stats['min_hits']} - {hit_stats['max_hits']:,}",
             )
+
+            console.print(hit_table)
+
+            # Hit count distribution
+            dist_table = Table(title="[bold]Hit Count Distribution[/bold]")
             dist_table.add_column("Range", style="cyan")
             dist_table.add_column("Blocks", justify="right", style="yellow")
             dist_table.add_column("Percentage", justify="right", style="green")
             dist_table.add_column("Bar", style="blue")
-            
-            total_blocks = summary['total_blocks']
-            max_count = max(hit_stats['distribution'].values()) if hit_stats['distribution'] else 1
-            
-            for range_name, count in hit_stats['distribution'].items():
+
+            total_blocks = summary["total_blocks"]
+            max_count = (
+                max(hit_stats["distribution"].values())
+                if hit_stats["distribution"]
+                else 1
+            )
+
+            for range_name, count in hit_stats["distribution"].items():
                 if count > 0:  # Only show ranges with blocks
                     percentage = (count / total_blocks) * 100
                     bar_width = int((count / max_count) * HIT_COUNT_BAR_WIDTH)
                     bar = "█" * bar_width
-                    
+
                     dist_table.add_row(
                         range_name,
                         f"{count:,}",
                         f"{percentage:.1f}%",
-                        f"[blue]{bar}[/blue]"
+                        f"[blue]{bar}[/blue]",
                     )
-            
+
             console.print(dist_table)
-        
+
         console.print()
 
     # address space info
@@ -374,7 +384,9 @@ def print_detailed_info_rich(
                         else ""
                     )
                     hit_info = f" hits={block['hits']}" if "hits" in block else ""
-                    tree.add(f"{block['offset']} ({block['size']}b){addr_info}{hit_info}")
+                    tree.add(
+                        f"{block['offset']} ({block['size']}b){addr_info}{hit_info}"
+                    )
                 console.print(tree)
         console.print()
 
