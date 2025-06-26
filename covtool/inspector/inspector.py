@@ -183,7 +183,7 @@ class CoverageInspector:
 
         return True
 
-    def _matches_search_term(self, block, module_name):
+    def _matches_search_term(self, block, module_name, abs_addr=None):
         """Check if block/module matches search term"""
         if not self.search_term:
             return True
@@ -194,8 +194,12 @@ class CoverageInspector:
         if search_lower in module_name.lower():
             return True
 
-        # Search in hex addresses
+        # Search in hex addresses (block offset)
         if search_lower in f"0x{block.start:x}":
+            return True
+
+        # Search in virtual addresses (absolute address)
+        if abs_addr is not None and search_lower in f"0x{abs_addr:x}":
             return True
 
         # Search in module if available
@@ -216,23 +220,30 @@ class CoverageInspector:
         self.module_list = []
 
         total_blocks = len(self.filtered_coverage.data.basic_blocks)
+        
+        # Create block-to-index mapping for efficient hit count lookup
+        block_to_index = {}
+        if self.filtered_coverage.data.has_hit_counts():
+            for i, block in enumerate(self.filtered_coverage.data.basic_blocks):
+                block_to_index[block] = i
+        
         for module_name, blocks in sorted(
             by_module.items(), key=lambda x: x[0]  # sort by module name
         ):
             # Apply search filter to modules
             if self.search_term and self.search_term.lower() not in module_name.lower():
                 continue
+                
             block_count = len(blocks)
             total_size = sum(block.size for block in blocks)
             percentage = (block_count / total_blocks * 100) if total_blocks > 0 else 0
 
             # Calculate hit count statistics for this module
-            module_hits = 0
             if self.filtered_coverage.data.has_hit_counts():
-                for block in blocks:
-                    block_index = self.filtered_coverage.data.basic_blocks.index(block)
-                    hits = self.filtered_coverage.data.get_hit_count(block_index)
-                    module_hits += hits
+                module_hits = sum(
+                    self.filtered_coverage.data.get_hit_count(block_to_index[block])
+                    for block in blocks
+                )
             else:
                 # Default hit count of 1 for each block
                 module_hits = block_count
@@ -255,14 +266,21 @@ class CoverageInspector:
         # Create block list with hit information
         blocks_with_hits = self.filtered_coverage.data.get_blocks_with_hits()
 
+        # Cache modules to avoid repeated lookups
+        module_cache = {}
+        
         for block, hits in blocks_with_hits:
-            module = self.filtered_coverage.data.find_module(block.module_id)
+            # Use cached module lookup
+            if block.module_id not in module_cache:
+                module_cache[block.module_id] = self.filtered_coverage.data.find_module(block.module_id)
+            module = module_cache[block.module_id]
+            
             module_name = (
                 os.path.basename(module.path) if module else f"module_{block.module_id}"
             )
             abs_addr = module.base + block.start if module else None
 
-            # Apply all filters
+            # Apply all filters - pass abs_addr to search for virtual address searching
             passes_hitcount_exact = (
                 self.hitcount_filter is None or hits == self.hitcount_filter
             )
@@ -272,7 +290,7 @@ class CoverageInspector:
             passes_size_filter = self._matches_range_filter(
                 block.size, self.size_filter
             )
-            passes_search = self._matches_search_term(block, module_name)
+            passes_search = self._matches_search_term(block, module_name, abs_addr)
 
             if (
                 passes_hitcount_exact

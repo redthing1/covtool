@@ -137,6 +137,7 @@ class SearchDialog(BaseDialog):
             ),
             urwid.Text("• Module names (case-insensitive)"),
             urwid.Text("• Block offsets (hex, e.g., '0x1000', '1000')"),
+            urwid.Text("• Virtual addresses (hex, e.g., '0x401000')"),
             urwid.Text("• Module paths"),
         ]
 
