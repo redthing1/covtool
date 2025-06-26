@@ -190,24 +190,34 @@ class CoverageInspector:
 
         search_lower = self.search_term.lower()
 
-        # Search in module name
-        if search_lower in module_name.lower():
-            return True
+        # Search targets in order of likelihood for better performance
+        search_targets = [
+            module_name.lower(),  # Module name
+            f"0x{block.start:x}",  # Block offset
+        ]
 
-        # Search in hex addresses (block offset)
-        if search_lower in f"0x{block.start:x}":
-            return True
+        # Add virtual address if available
+        if abs_addr is not None:
+            search_targets.append(f"0x{abs_addr:x}")
 
-        # Search in virtual addresses (absolute address)
-        if abs_addr is not None and search_lower in f"0x{abs_addr:x}":
-            return True
-
-        # Search in module if available
+        # Add module path if available
         if hasattr(block, "module") and block.module:
-            if search_lower in block.module.path.lower():
-                return True
+            search_targets.append(block.module.path.lower())
 
-        return False
+        return any(search_lower in target for target in search_targets)
+
+    def _passes_all_filters(self, block, hits, module_name, abs_addr):
+        """Check if block passes all active filters"""
+        return (
+            (self.hitcount_filter is None or hits == self.hitcount_filter)
+            and self._matches_range_filter(hits, self.hitcount_range_filter)
+            and self._matches_range_filter(block.size, self.size_filter)
+            and self._matches_search_term(block, module_name, abs_addr)
+        )
+
+    def _get_module_display_name(self, module, module_id):
+        """Get display name for a module"""
+        return os.path.basename(module.path) if module else f"module_{module_id}"
 
     def _setup_data(self):
         """Prepare data for display"""
@@ -220,20 +230,24 @@ class CoverageInspector:
         self.module_list = []
 
         total_blocks = len(self.filtered_coverage.data.basic_blocks)
-        
+
         # Create block-to-index mapping for efficient hit count lookup
-        block_to_index = {}
-        if self.filtered_coverage.data.has_hit_counts():
-            for i, block in enumerate(self.filtered_coverage.data.basic_blocks):
-                block_to_index[block] = i
-        
+        block_to_index = (
+            {
+                block: i
+                for i, block in enumerate(self.filtered_coverage.data.basic_blocks)
+            }
+            if self.filtered_coverage.data.has_hit_counts()
+            else {}
+        )
+
         for module_name, blocks in sorted(
             by_module.items(), key=lambda x: x[0]  # sort by module name
         ):
             # Apply search filter to modules
             if self.search_term and self.search_term.lower() not in module_name.lower():
                 continue
-                
+
             block_count = len(blocks)
             total_size = sum(block.size for block in blocks)
             percentage = (block_count / total_blocks * 100) if total_blocks > 0 else 0
@@ -268,47 +282,35 @@ class CoverageInspector:
 
         # Cache modules to avoid repeated lookups
         module_cache = {}
-        
+
         for block, hits in blocks_with_hits:
             # Use cached module lookup
             if block.module_id not in module_cache:
-                module_cache[block.module_id] = self.filtered_coverage.data.find_module(block.module_id)
+                module_cache[block.module_id] = self.filtered_coverage.data.find_module(
+                    block.module_id
+                )
             module = module_cache[block.module_id]
-            
-            module_name = (
-                os.path.basename(module.path) if module else f"module_{block.module_id}"
-            )
+            module_name = self._get_module_display_name(module, block.module_id)
             abs_addr = module.base + block.start if module else None
 
-            # Apply all filters - pass abs_addr to search for virtual address searching
-            passes_hitcount_exact = (
-                self.hitcount_filter is None or hits == self.hitcount_filter
+            # Apply all filters
+            if not self._passes_all_filters(block, hits, module_name, abs_addr):
+                continue
+            self.block_list.append(
+                {
+                    "block": block,
+                    "module": module,
+                    "module_name": module_name,
+                    "abs_addr": abs_addr,
+                    "hits": hits,
+                }
             )
-            passes_hitcount_range = self._matches_range_filter(
-                hits, self.hitcount_range_filter
-            )
-            passes_size_filter = self._matches_range_filter(
-                block.size, self.size_filter
-            )
-            passes_search = self._matches_search_term(block, module_name, abs_addr)
 
-            if (
-                passes_hitcount_exact
-                and passes_hitcount_range
-                and passes_size_filter
-                and passes_search
-            ):
-                self.block_list.append(
-                    {
-                        "block": block,
-                        "module": module,
-                        "module_name": module_name,
-                        "abs_addr": abs_addr,
-                        "hits": hits,
-                    }
-                )
+        # Sort blocks based on current sort mode
+        self._sort_block_list()
 
-        # Sort based on current sort mode
+    def _sort_block_list(self):
+        """Sort block list based on current sort mode"""
         if self.block_sort_mode == "hits":
             # Sort by hits (descending), then by address
             self.block_list.sort(
