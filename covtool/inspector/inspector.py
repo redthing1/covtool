@@ -226,7 +226,7 @@ class CoverageInspector:
 
     def _refresh_module_list(self):
         """Refresh the module list for current filtered coverage"""
-        by_module = self.filtered_coverage.get_coverage_by_module()
+        by_module = self.filtered_coverage.get_coverage_by_module_with_base()
         self.module_list = []
 
         total_blocks = len(self.filtered_coverage.data.basic_blocks)
@@ -324,7 +324,9 @@ class CoverageInspector:
         """Apply module filter"""
         self.current_filter = filter_text
         if filter_text.strip():
-            self.filtered_coverage = self.coverage.filter_by_module(filter_text.strip())
+            # remove @0xXXXX suffix if present for filtering
+            base_filter = filter_text.strip().split("@")[0]
+            self.filtered_coverage = self.coverage.filter_by_module(base_filter)
         else:
             self.filtered_coverage = self.coverage
 

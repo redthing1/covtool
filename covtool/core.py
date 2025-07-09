@@ -135,6 +135,18 @@ class CoverageSet:
                 by_module[module_name].append(block)
         return dict(by_module)
 
+    def get_coverage_by_module_with_base(self) -> Dict[str, List[BasicBlock]]:
+        """organize coverage by module name with base address to distinguish duplicates"""
+        by_module = defaultdict(list)
+        for block in self.data.basic_blocks:
+            module = self.data.find_module(block.module_id)
+            if module:
+                module_name = os.path.basename(module.path)
+                # Include base address in key to distinguish duplicate modules
+                key = f"{module_name}@0x{module.base:x}"
+                by_module[key].append(block)
+        return dict(by_module)
+
     def get_rarity_info(self, all_sets: List["CoverageSet"]) -> Dict[BasicBlock, int]:
         """
         for each block, count how many coverage sets contain it
