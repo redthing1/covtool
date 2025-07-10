@@ -191,12 +191,18 @@ def _generate_coverage_data(
                     block_index = coverage.data.basic_blocks.index(block)
                     hits = coverage.data.get_hit_count(block_index)
                     blocks_with_hits.append((block, hits))
-                
-                top_blocks_by_hits = sorted(blocks_with_hits, key=lambda x: (-x[1], -x[0].size))[:top_blocks]
+
+                top_blocks_by_hits = sorted(
+                    blocks_with_hits, key=lambda x: (-x[1], -x[0].size)
+                )[:top_blocks]
                 data["sample_blocks"][module_name] = []
                 for block, hits in top_blocks_by_hits:
                     abs_addr = module_obj.base + block.start if module_obj else None
-                    block_data = {"offset": f"0x{block.start:08x}", "size": block.size, "hits": hits}
+                    block_data = {
+                        "offset": f"0x{block.start:x}",
+                        "size": block.size,
+                        "hits": hits,
+                    }
                     if abs_addr:
                         block_data["absolute_address"] = f"0x{abs_addr:x}"
                     data["sample_blocks"][module_name].append(block_data)
@@ -331,14 +337,17 @@ def print_detailed_info_rich(
     if data["modules"]:
         modules_table = Table(title="[bold]Module Breakdown[/bold]")
         modules_table.add_column("Module", style="cyan", no_wrap=True)
+        modules_table.add_column("Base", style="magenta", no_wrap=True)
         modules_table.add_column("Blocks", justify="right", style="yellow")
         modules_table.add_column("Coverage", justify="right", style="green")
         modules_table.add_column("Size", justify="right", style="blue")
         modules_table.add_column("Path", style="dim", max_width=50)
 
         for mod in data["modules"][:DEFAULT_TOP_MODULES]:  # top modules
+            base_addr = mod.get("base_address", "") if mod.get("base_address") else ""
             modules_table.add_row(
                 mod["name"],
+                base_addr,
                 f"{mod['block_count']:,}",
                 f"{mod['percentage']:.1f}%",
                 f"{mod['coverage_size']:,}b",
@@ -374,7 +383,9 @@ def print_detailed_info_rich(
 
     # top blocks by hits for filtered module
     if data["sample_blocks"] and module_filter:
-        console.print(f"[bold]Top {top_blocks} Blocks by Hit Count (Filtered Module)[/bold]")
+        console.print(
+            f"[bold]Top {top_blocks} Blocks by Hit Count (Filtered Module)[/bold]"
+        )
         console.print()
 
         for module_name, blocks in data["sample_blocks"].items():
@@ -445,5 +456,5 @@ def print_rarity_analysis(coverage_sets: List[CoverageSet], threshold: int):
         typer.echo(f"\n{module_name}:")
         for block, count in sorted(block_list, key=lambda x: x[1]):
             typer.echo(
-                f"  0x{block.start:08x} (size: {block.size}, hit by {count} trace{'s' if count != 1 else ''})"
+                f"  0x{block.start:x} (size: {block.size}, hit by {count} trace{'s' if count != 1 else ''})"
             )
