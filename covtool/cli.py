@@ -337,6 +337,138 @@ def lift(
         raise typer.Exit(1)
 
 
+@app.command()
+def edit(
+    file: Path = typer.Argument(..., help="drcov file to edit"),
+    output: Path = typer.Option(..., "--output", "-o", help="output file"),
+    rebase: List[str] = typer.Option(
+        [],
+        "--rebase",
+        "-r",
+        help="rebase module to new address (module->addr or module@oldaddr->newaddr)",
+    ),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="verbose output"),
+):
+    """edit a coverage trace with various operations"""
+    if not rebase:
+        typer.echo("error: at least one edit operation must be specified", err=True)
+        raise typer.Exit(1)
+
+    try:
+        # load the coverage file
+        coverage = CoverageSet.from_file(str(file), permissive=True)
+        modified = False
+
+        # process rebase operations
+        for rebase_spec in rebase:
+            if "->" not in rebase_spec:
+                typer.echo(
+                    f"error: invalid rebase specification '{rebase_spec}' - expected 'module->addr' or 'module@oldaddr->newaddr'",
+                    err=True,
+                )
+                continue
+
+            parts = rebase_spec.split("->", 1)
+            if len(parts) != 2:
+                typer.echo(
+                    f"error: invalid rebase specification '{rebase_spec}' - expected 'module->addr' or 'module@oldaddr->newaddr'",
+                    err=True,
+                )
+                continue
+
+            module_spec, new_addr_str = parts
+
+            # parse new address
+            try:
+                new_addr = (
+                    int(new_addr_str, 16)
+                    if new_addr_str.startswith("0x")
+                    else int(new_addr_str, 16)
+                )
+            except ValueError:
+                typer.echo(
+                    f"error: invalid address '{new_addr_str}' in rebase specification",
+                    err=True,
+                )
+                continue
+
+            # parse module specification (either 'module' or 'module@addr')
+            if "@" in module_spec:
+                module_name, old_addr_str = module_spec.split("@", 1)
+                try:
+                    old_addr = (
+                        int(old_addr_str, 16)
+                        if old_addr_str.startswith("0x")
+                        else int(old_addr_str, 16)
+                    )
+                except ValueError:
+                    typer.echo(
+                        f"error: invalid address '{old_addr_str}' in module specification",
+                        err=True,
+                    )
+                    continue
+
+                # find module by name and current base address
+                matching_modules = [
+                    m
+                    for m in coverage.data.modules
+                    if module_name.lower() in m.path.lower() and m.base == old_addr
+                ]
+            else:
+                module_name = module_spec
+                # find all modules matching the name
+                matching_modules = [
+                    m
+                    for m in coverage.data.modules
+                    if module_name.lower() in m.path.lower()
+                ]
+
+                if len(matching_modules) > 1:
+                    typer.echo(
+                        f"error: multiple modules match '{module_name}' - use module@addr->newaddr syntax to disambiguate:",
+                        err=True,
+                    )
+                    for m in matching_modules:
+                        typer.echo(
+                            f"  {m.path.split('/')[-1]}@0x{m.base:x}->0x{new_addr:x}",
+                            err=True,
+                        )
+                    continue
+
+            if not matching_modules:
+                typer.echo(f"error: no module found matching '{module_spec}'", err=True)
+                continue
+
+            # rebase the module
+            module = matching_modules[0]
+            old_base = module.base
+            size = module.end - module.base
+
+            if verbose:
+                typer.echo(
+                    f"rebasing module '{module.path.split('/')[-1]}' from 0x{old_base:x} to 0x{new_addr:x}"
+                )
+
+            module.base = new_addr
+            module.end = new_addr + size
+            modified = True
+
+        if modified:
+            # write the modified coverage
+            coverage.write_to_file(str(output))
+            typer.echo(f"wrote modified coverage to {output}")
+        else:
+            typer.echo("no modifications made")
+
+    except Exception as e:
+        typer.echo(f"error editing coverage file: {e}", err=True)
+        if verbose:
+            import traceback
+
+            traceback.print_exc()
+        raise typer.Exit(1)
+
+
 def main():
     """entry point for poetry script"""
     app()
