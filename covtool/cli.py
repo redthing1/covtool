@@ -25,6 +25,20 @@ app = typer.Typer(
     add_completion=False,
 )
 
+# global state for verbose option
+verbose_enabled = False
+
+
+@app.callback()
+def main_callback(
+    verbose: bool = typer.Option(
+        False, "-v", "--verbose", help="enable verbose output for all operations"
+    ),
+):
+    """global options for covtool"""
+    global verbose_enabled
+    verbose_enabled = verbose
+
 
 @app.command()
 def union(
@@ -33,7 +47,6 @@ def union(
     module: Optional[str] = typer.Option(
         None, "--module", "-m", help="filter to specific module"
     ),
-    verbose: bool = typer.Option(False, "--verbose", "-v", help="verbose output"),
 ):
     """compute union of coverage files (logical OR)"""
     coverage_sets = load_multiple_coverage(files)
@@ -53,7 +66,7 @@ def union(
     # write result
     result.write_to_file(str(output))
 
-    if verbose:
+    if verbose_enabled:
         typer.echo(f"union of {len(files)} files:")
         print_coverage_stats(result)
 
@@ -67,7 +80,6 @@ def intersect(
     module: Optional[str] = typer.Option(
         None, "--module", "-m", help="filter to specific module"
     ),
-    verbose: bool = typer.Option(False, "--verbose", "-v", help="verbose output"),
 ):
     """compute intersection of coverage files (logical AND)"""
     coverage_sets = load_multiple_coverage(files)
@@ -87,7 +99,7 @@ def intersect(
     # write result
     result.write_to_file(str(output))
 
-    if verbose:
+    if verbose_enabled:
         typer.echo(f"intersection of {len(files)} files:")
         print_coverage_stats(result)
 
@@ -102,7 +114,6 @@ def diff(
     module: Optional[str] = typer.Option(
         None, "--module", "-m", help="filter to specific module"
     ),
-    verbose: bool = typer.Option(False, "--verbose", "-v", help="verbose output"),
 ):
     """compute difference between coverage files (minuend - subtrahend)"""
     try:
@@ -122,7 +133,7 @@ def diff(
     # write result
     result.write_to_file(str(output))
 
-    if verbose:
+    if verbose_enabled:
         typer.echo(f"difference analysis:")
         print_coverage_stats(cov1, f"{minuend.name} (minuend)")
         print_coverage_stats(cov2, f"{subtrahend.name} (subtrahend)")
@@ -139,7 +150,6 @@ def symdiff(
     module: Optional[str] = typer.Option(
         None, "--module", "-m", help="filter to specific module"
     ),
-    verbose: bool = typer.Option(False, "--verbose", "-v", help="verbose output"),
 ):
     """compute symmetric difference (blocks unique to either file)"""
     try:
@@ -159,7 +169,7 @@ def symdiff(
     # write result
     result.write_to_file(str(output))
 
-    if verbose:
+    if verbose_enabled:
         typer.echo(f"symmetric difference analysis:")
         print_coverage_stats(cov1, file1.name)
         print_coverage_stats(cov2, file2.name)
@@ -315,7 +325,6 @@ def lift(
     modules: List[str] = typer.Option(
         [], "--module", "-M", help="module definitions (name@base_addr)"
     ),
-    verbose: bool = typer.Option(False, "--verbose", "-v", help="verbose output"),
 ):
     """lift simple coverage formats to drcov format"""
     if not modules:
@@ -325,12 +334,12 @@ def lift(
     try:
         from .lift import lift_coverage_file
 
-        result_coverage = lift_coverage_file(str(input_file), modules, verbose)
+        result_coverage = lift_coverage_file(str(input_file), modules, verbose_enabled)
         result_coverage.write_to_file(str(output))
         typer.echo(f"wrote {len(result_coverage)} blocks to {output}")
     except Exception as e:
         typer.echo(f"error lifting coverage file: {e}", err=True)
-        if verbose:
+        if verbose_enabled:
             import traceback
 
             traceback.print_exc()
@@ -347,7 +356,6 @@ def edit(
         "-r",
         help="rebase module to new address (module->addr or module@oldaddr->newaddr)",
     ),
-    verbose: bool = typer.Option(False, "--verbose", "-v", help="verbose output"),
 ):
     """edit a coverage trace with various operations"""
     if not rebase:
@@ -444,7 +452,7 @@ def edit(
             old_base = module.base
             size = module.end - module.base
 
-            if verbose:
+            if verbose_enabled:
                 typer.echo(
                     f"rebasing module '{module.path.split('/')[-1]}' from 0x{old_base:x} to 0x{new_addr:x}"
                 )
@@ -462,7 +470,7 @@ def edit(
 
     except Exception as e:
         typer.echo(f"error editing coverage file: {e}", err=True)
-        if verbose:
+        if verbose_enabled:
             import traceback
 
             traceback.print_exc()
