@@ -20,6 +20,27 @@ also supports a [custom backwards-compatible extension](./doc/drcov_spec_hits_v2
 uv tool install covtool
 ```
 
+## usage
+
+### viewing coverage traces
+
+open the tui inspector to navigate through a trace with:
+```sh
+covtool inspect <trace>
+```
+
+or just view a summary:
+```sh
+covtool info <trace>
+```
+
+### editing coverage traces
+
+sometimes due to things like aslr, we need to adjust module addresses:
+```sh
+covtool -v edit <trace> -o <trace> --rebase 'SomeModule->0x0'
+```
+
 ## coverage formats
 
 ### flagship: drcov (+hits)
