@@ -6,6 +6,7 @@ from pathlib import Path
 import typer
 
 from .core import CoverageSet
+from .drcov import BasicBlock
 from .analysis import (
     load_multiple_coverage,
     print_coverage_stats,
@@ -353,12 +354,22 @@ def edit(
     rebase: List[str] = typer.Option(
         [],
         "--rebase",
-        "-r",
         help="rebase module to new address (module->addr or module@oldaddr->newaddr)",
+    ),
+    adjust_offsets: List[str] = typer.Option(
+        [],
+        "--adjust-offsets",
+        help="adjust offsets of all blocks in a module (module,offset)",
+    ),
+    filter: List[str] = typer.Option(
+        [],
+        "--filter",
+        "-f",
+        help="only include modules matching filter pattern",
     ),
 ):
     """edit a coverage trace with various operations"""
-    if not rebase:
+    if not rebase and not adjust_offsets and not filter:
         typer.echo("error: at least one edit operation must be specified", err=True)
         raise typer.Exit(1)
 
@@ -459,6 +470,145 @@ def edit(
 
             module.base = new_addr
             module.end = new_addr + size
+            modified = True
+
+        # process adjust_offsets operations
+        for adjust_spec in adjust_offsets:
+            if "," not in adjust_spec:
+                typer.echo(
+                    f"error: invalid adjust-offsets specification '{adjust_spec}' - expected 'module,offset'",
+                    err=True,
+                )
+                continue
+
+            parts = adjust_spec.split(",", 1)
+            if len(parts) != 2:
+                typer.echo(
+                    f"error: invalid adjust-offsets specification '{adjust_spec}' - expected 'module,offset'",
+                    err=True,
+                )
+                continue
+
+            module_name, offset_str = parts
+
+            # parse offset (can be negative)
+            try:
+                offset = (
+                    int(offset_str, 16)
+                    if offset_str.startswith("0x") or offset_str.startswith("-0x")
+                    else int(offset_str)
+                )
+            except ValueError:
+                typer.echo(
+                    f"error: invalid offset '{offset_str}' in adjust-offsets specification",
+                    err=True,
+                )
+                continue
+
+            # find modules matching the name
+            matching_modules = [
+                m
+                for m in coverage.data.modules
+                if module_name.lower() in m.path.lower()
+            ]
+
+            if not matching_modules:
+                typer.echo(f"error: no module found matching '{module_name}'", err=True)
+                continue
+
+            if len(matching_modules) > 1:
+                typer.echo(
+                    f"error: multiple modules match '{module_name}' - be more specific:",
+                    err=True,
+                )
+                for m in matching_modules:
+                    typer.echo(f"  {m.path}", err=True)
+                continue
+
+            # adjust offsets for all blocks in this module
+            module = matching_modules[0]
+            adjusted_count = 0
+            new_blocks = []
+
+            for bb in coverage.data.basic_blocks:
+                if bb.module_id == module.id:
+                    # create a new BasicBlock with adjusted offset
+                    new_start = bb.start + offset
+                    if new_start < 0:
+                        typer.echo(
+                            f"warning: skipping block at 0x{bb.start:x} - adjusted offset would be negative",
+                            err=True,
+                        )
+                        continue
+
+                    new_bb = BasicBlock(
+                        start=new_start, size=bb.size, module_id=bb.module_id
+                    )
+                    new_blocks.append(new_bb)
+                    adjusted_count += 1
+                else:
+                    # keep blocks from other modules unchanged
+                    new_blocks.append(bb)
+
+            # replace the entire list
+            coverage.data.basic_blocks = new_blocks
+
+            if verbose_enabled:
+                typer.echo(
+                    f"adjusted {adjusted_count} blocks in module '{module.path.split('/')[-1]}' by offset {offset_str}"
+                )
+
+            if adjusted_count > 0:
+                modified = True
+
+        # apply module filters
+        if filter:
+            # find modules to keep
+            modules_to_keep = set()
+            for pattern in filter:
+                for module in coverage.data.modules:
+                    if pattern.lower() in module.path.lower():
+                        modules_to_keep.add(module.id)
+
+            if verbose_enabled:
+                typer.echo(f"keeping {len(modules_to_keep)} modules matching filters")
+
+            # filter modules
+            filtered_modules = [
+                m for m in coverage.data.modules if m.id in modules_to_keep
+            ]
+
+            # filter basic blocks and hit counts
+            filtered_blocks = []
+            filtered_hit_counts = [] if coverage.data.hit_counts else None
+
+            for i, bb in enumerate(coverage.data.basic_blocks):
+                if bb.module_id in modules_to_keep:
+                    filtered_blocks.append(bb)
+                    if coverage.data.hit_counts:
+                        filtered_hit_counts.append(coverage.data.hit_counts[i])
+
+            # update the coverage data
+            coverage.data.modules = filtered_modules
+            coverage.data.basic_blocks = filtered_blocks
+            if filtered_hit_counts is not None:
+                coverage.data.hit_counts = filtered_hit_counts
+
+            # reindex module IDs to be sequential
+            module_id_map = {}
+            for i, module in enumerate(filtered_modules):
+                module_id_map[module.id] = i
+                module.id = i
+
+            # update block module IDs by creating new blocks
+            updated_blocks = []
+            for bb in filtered_blocks:
+                new_bb = BasicBlock(
+                    start=bb.start, size=bb.size, module_id=module_id_map[bb.module_id]
+                )
+                updated_blocks.append(new_bb)
+            coverage.data.basic_blocks = updated_blocks
+
             modified = True
 
         if modified:
