@@ -11,6 +11,7 @@ also supports a [custom backwards-compatible extension](./doc/drcov_spec_hits_v2
 + a flagship tui for inspecting traces
 + view stats about coverage traces
 + perform queries (intersection, difference, etc.) on multiple traces
++ edit traces (rebase modules, adjust offsets)
 + lift simple formats to drcov (write your own coverage tools)
 
 ## install
