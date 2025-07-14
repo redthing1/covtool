@@ -1,6 +1,6 @@
 [project]
 name = "covtool"
-version = "0.4.3"
+version = "0.4.4"
 description = "a multitool for manipulating coverage traces for dynamic analysis"
 authors = [
     {name = "redthing1",email = "redthing1@alt.icu"}
