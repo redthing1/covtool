@@ -343,7 +343,7 @@ def print_detailed_info_rich(
         modules_table.add_column("Size", justify="right", style="blue")
         modules_table.add_column("Path", style="dim", max_width=50)
 
-        for mod in data["modules"][:DEFAULT_TOP_MODULES]:  # top modules
+        for mod in data["modules"]:  # show all modules
             base_addr = mod.get("base_address", "") if mod.get("base_address") else ""
             modules_table.add_row(
                 mod["name"],
